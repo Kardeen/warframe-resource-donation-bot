@@ -1,242 +1,195 @@
+import os
+import re
+import requests
 import discord
 from discord.ext import commands
-import requests  # Neu hinzugefügt für die Verbindung zu Google
-import base64  # Neu: Zum Umwandeln des Bildes in Text
+import easyocr
+from rapidfuzz import process, fuzz
 from dotenv import dotenv_values
 
+# --- CONFIGURATION ---
 secrets = dotenv_values(".env")
 
-# --- KONFIGURATION ---
 TOKEN = secrets["TOKEN"]
 WEBAPP_URL = secrets["WEBAPP_URL"]
 
-# Kanaleinstellungen
-SPENDEN_KANAL_NAME = "clan-spenden"    # Dein Spendenkanal-Name
-NUR_IM_SPENDENKANAL = True             # True = Bot reagiert live NUR im Spendenkanal
-                                       # False = Bot reagiert live in JEDEM Kanal
-ADMIN_KANAL_ID = 987654321098765432    # <-- ERSETZE DIES MIT DER ID DEINES ADMIN-CHANNELS
+# Channel Restrictions
+ADMIN_KANAL_ID = 1516160408170528791    # Replace with your Admin Channel ID
+SPENDEN_KANAL_ID = 1516100470584643586  # Replace with your Spenden Channel ID
+NUR_IM_SPENDENKANAL = True
+
+# Whitelist Config
+RESOURCES_FILE = "warframe_resources.txt"
+RESOURCE_WHITELIST = []
+
+if os.path.exists(RESOURCES_FILE):
+    with open(RESOURCES_FILE, "r", encoding="utf-8") as f:
+        RESOURCE_WHITELIST = [line.strip() for line in f if line.strip()]
+    print(f"✅ Whitelist Engine: Loaded {len(RESOURCE_WHITELIST)} official resources.")
+else:
+    print(f"⚠️ WARNING: '{RESOURCES_FILE}' not found! Run your extraction script first.")
+
+# --- INITIALIZE ENGINES ---
+print("📥 Loading OCR Models (English)...")
+# 'en' loads English. You can add languages later like ['en', 'de', 'fr']
+reader = easyocr.Reader(['en'], gpu=False) 
+print("🚀 OCR Engine ready!")
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- HELPER FUNCTIONS ---
+
+def clean_and_validate_ocr(raw_text_lines, threshold=75):
+    """
+    Scans raw OCR text blocks for patterns like '31 x Cryotic' or '10 Credits'.
+    Cross-references resource names with the local whitelist using fuzzy matching.
+    """
+    detected_items = []
+    
+    # --- DEBUGGING LOGS ---
+    print("\n--- [OCR DEBUG: RAW DETECTED LINES] ---")
+    for idx, line in enumerate(raw_text_lines):
+        print(f"Line {idx}: '{line}'")
+    print("---------------------------------------\n")
+    # ----------------------
+
+    # EasyOCR fix: Clean spaces and stitch lines together into one big block
+    # We replace multiple spaces or weird line breaks around 'x' to help regex catch it
+    combined_text = "\n".join(raw_text_lines)
+    
+    # Pattern 1: Standard Items (e.g., "31 x Cryotic" or "5000 x Alloy Plate")
+    regex_items = re.findall(r'(\d+)\s*[xX]\s*([^|$\n\(\)]+)', combined_text)
+    for amount, raw_name in regex_items:
+        raw_name = raw_name.strip()
+        
+        # Skip garbage UI matches
+        if any(word in raw_name.lower() for word in ["direct vault", "donation", "credits", "cancel"]):
+            continue
+            
+        # Fuzzy Match against our whitelist
+        match = process.extractOne(raw_name, RESOURCE_WHITELIST, scorer=fuzz.WRatio)
+        if match:
+            matched_name, confidence, _ = match
+            if confidence >= threshold:
+                detected_items.append({"amount": int(amount), "item": matched_name})
+                print(f"[MATCH SUCCESS] Found Item: {amount}x {matched_name} (Confidence: {confidence:.1f}%)")
+            else:
+                print(f"[MATCH REJECTED] Found '{raw_name}' but match to '{matched_name}' was too low ({confidence:.1f}%)")
+
+    # Pattern 2: Vault Credits confirmation screen (e.g., "10 Credits to your CLAN Vault")
+    regex_credits = re.search(r'(\d+)\s*credits', combined_text, re.IGNORECASE)
+    if regex_credits:
+        credit_amount = regex_credits.group(1)
+        detected_items.append({"amount": int(credit_amount), "item": "Credits"})
+        print(f"[MATCH SUCCESS] Found Credits: {credit_amount}x Credits")
+
+    return detected_items
+
+# --- BOT EVENTS ---
 
 @bot.event
 async def on_ready():
-    print(f"Bot ist bereit und verknüpft! Name: {bot.user.name}")
-    print("--------------------------------------------------")
+    print(f"🤖 {bot.user.name} is online and operational!")
 
 @bot.event
 async def on_message(message):
-    # Wichtig: Der Bot soll nicht auf seine eigenen Nachrichten reagieren
     if message.author == bot.user:
         return
-    
-    # Prüfen, ob der Kanal-Name übereinstimmt
-    if NUR_IM_SPENDENKANAL and message.channel.name != SPENDEN_KANAL_NAME:
-        return  # Ignoriert alles, was nicht in "clan-spenden" geschrieben wird
 
-    # Prüfen, ob der Bot in der Nachricht erwähnt (getaggt) wurde
-    if bot.user.mentioned_in(message):
-        
-        # Falls ein Bild an der Nachricht hängt, verarbeiten wir es
-        if message.attachments:
+    # Filter live processing by channel
+    if not NUR_IM_SPENDENKANAL or message.channel.id == SPENDEN_KANAL_ID:
+        if bot.user.mentioned_in(message) and message.attachments:
             for attachment in message.attachments:
                 filename = attachment.filename.lower()
                 if filename.endswith(('.png', '.jpg', '.jpeg', '.webp')):
                     
-                    status_message = await message.channel.send("🔄 Erwähnung erkannt. Verarbeite Bilddaten...")
+                    status_msg = await message.channel.send("🔄 Local OCR engine is reading image pixels...")
                     
                     try:
-                        # Textinhalt der Nachricht bereinigen (Bot-Tag entfernen)
-                        # Wenn du "@Bot 50x Eisen" schreibst, bleibt nur "50x Eisen" übrig
-                        zusatz_text = message.clean_content.replace(f"@{bot.user.name}", "").strip()
-                        
-                        # Bild herunterladen und in Base64 umwandeln
+                        # 1. Download image into system memory bytes
                         image_bytes = await attachment.read()
-                        base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
                         
-                        # Payload für Google Apps Script
+                        # 2. Execute Local OCR Extraction
+                        ocr_results = reader.readtext(image_bytes, detail=0) # detail=0 returns just raw string lines
+                        
+                        # 3. Clean and run Whitelist validation filter
+                        verified_donations = clean_and_validate_ocr(ocr_results)
+                        
+                        if not verified_donations:
+                            await status_msg.edit(content="⚠️ No valid Warframe resources detected in this image layout.")
+                            continue
+                        
+                        # 4. Prepare clear payload package for Google Sheets
                         payload = {
                             "username": str(message.author.name),
-                            "imageBuffer": base64_encoded,
-                            "additionalText": zusatz_text  # Wir senden den Text deiner Nachricht mit!
+                            "donations": verified_donations # Sending a clean array structure
                         }
                         
                         response = requests.post(WEBAPP_URL, json=payload)
                         
-                        if response.status_code == 200:
-                            res_data = response.json()
-                            if res_data.get("status") == "success":
-                                details = res_data.get('message', 'Keine Details')
-                                await status_message.edit(
-                                    content=f"✅ **Spende über Erwähnung registriert!**\n"
-                                            f"👤 Spieler: {res_data.get('spieler')}\n"
-                                            f"📦 {details}"
-                                )
-                            else:
-                                await status_message.edit(content=f"❌ Google-Fehler: {res_data.get('message')}")
+                        if response.status_code == 200 and response.json().get("status") == "success":
+                            details = "\n".join([f"▫️ {d['amount']}x {d['item']}" for d in verified_donations])
+                            await status_msg.edit(content=f"✅ **Donation registered via Local OCR!**\n👤 Player: {message.author.name}\n{details}")
                         else:
-                            await status_message.edit(content=f"❌ HTTP-Fehler: {response.status_code}")
-                    
+                            await status_msg.edit(content="❌ Data processing failed at Google Sheets layer.")
+                            
                     except Exception as e:
-                        await status_message.edit(content=f"❌ Fehler: {str(e)}")
-                        
-        else:
-            # Der Bot wurde getaggt, aber es war kein Bild dabei (nur Text)
-            zusatz_text = message.clean_content.replace(f"@{bot.user.name}", "").strip()
-            await message.channel.send(f"👋 Hallo {message.author.mention}! Du hast mich getaggt. Ich habe folgenden Text von dir empfangen: *\"{zusatz_text}\"* (Es war aber kein Screenshot angehängt).")
+                        await status_msg.edit(content=f"❌ OCR Runtime Error: {str(e)}")
 
-    # WICHTIG: Damit Befehle wie !sync weiterhin funktionieren
     await bot.process_commands(message)
+
+# --- BOT COMMANDS ---
 
 @bot.command(name="sync")
 @commands.has_permissions(administrator=True)
 async def sync_history(ctx):
-    """Sucht nach der letzten Nachricht des Bots und verarbeitet alles, was danach kam."""
-    # 1. Schritt: Wir suchen rückwärts nach der letzten Nachricht vom Bot
-    # Aber wir merken uns die ID der aktuellen Nachricht, um sie zu ignorieren!
-    aktueller_status = await ctx.send("🔄 Analysiere Kanal-Historie auf verpasste Spenden...")
+    """Processes historical channel messages using local Python OCR, ignoring already confirmed segments."""
+    status_msg = await ctx.send("🔄 Analyzing channel history for missing donations...")
     
     letzte_bot_nachricht = None
     verpasste_nachrichten = []
     
     async for message in ctx.channel.history(limit=200):
-        # Die Nachricht muss vom Bot sein, darf aber NICHT die gerade eben gesendete Status-Nachricht sein
-        if message.author == bot.user and message.id != aktueller_status.id:
+        if message.author == bot.user and "Analyzing" not in message.content:
             letzte_bot_nachricht = message
-            break # Älteren Anker gefunden -> Stoppen
+            break
 
-    # 2. Schritt: Wir holen alle Nachrichten ab, die NACH dieser Bot-Nachricht kamen
     if letzte_bot_nachricht:
-        print(f"[SYNC] Letzte Bot-Nachricht gefunden am {letzte_bot_nachricht.created_at}. Hole neuere Nachrichten...")
-        # 'after' sorgt dafür, dass nur Nachrichten geladen werden, die zeitlich NACH dem Bot kamen
         async for message in ctx.channel.history(after=letzte_bot_nachricht, limit=100, oldest_first=True):
-            if message.attachments:
+            if message.attachments and message.author != bot.user:
                 verpasste_nachrichten.append(message)
     else:
-        # Falls der Bot noch NIE in diesem Kanal geschrieben hat, nehmen wir zur Sicherheit die letzten 50
-        await ctx.send("ℹ️ Keine vorherige Bot-Nachricht gefunden. Scanne die letzten 50 Nachrichten...")
         async for message in ctx.channel.history(limit=50, oldest_first=True):
-            if message.author != bot.user and message.attachments:
+            if message.attachments and message.author != bot.user:
                 verpasste_nachrichten.append(message)
 
-    # 3. Schritt: Die verpassten Screenshots verarbeiten
     if not verpasste_nachrichten:
-        await ctx.send("✨ Alles auf dem Laufenden! Es gibt keine verpassten Spenden seit der letzten Aktivität.")
+        await status_msg.edit(content="✨ System up to date. No unprocessed layouts found.")
         return
 
-    await ctx.send(f"📦 {len(verpasste_nachrichten)} verpasste Nachricht(en) mit Anhängen gefunden. Verarbeite...")
-    erfolgreiche_syncs = 0
-
+    await status_msg.edit(content=f"📦 Found {len(verpasste_nachrichten)} pending layout instances. Running OCR queue...")
+    
+    success_count = 0
     for message in verpasste_nachrichten:
         for attachment in message.attachments:
-            filename = attachment.filename.lower()
-            if filename.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+            if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                 try:
-                    image_bytes = await attachment.read()
-                    base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
+                    img_data = await attachment.read()
+                    lines = reader.readtext(img_data, detail=0)
+                    verified = clean_and_validate_ocr(lines)
                     
-                    payload = {
-                        "username": str(message.author.name),
-                        "imageBuffer": base64_encoded
-                    }
-                    
-                    response = requests.post(WEBAPP_URL, json=payload)
-                    
-                    if response.status_code == 200 and response.json().get("status") == "success":
-                        erfolgreiche_syncs += 1
-                        # Der Bot gibt eine kurze Info im Chat ab – das dient gleichzeitig als neuer Anker für das nächste Mal!
-                        await ctx.send(f"✅ Nachgetragen: Spende von **{message.author.name}** ({attachment.filename})")
-                        
+                    if verified:
+                        payload = {"username": str(message.author.name), "donations": verified}
+                        res = requests.post(WEBAPP_URL, json=payload)
+                        if res.status_code == 200 and res.json().get("status") == "success":
+                            success_count += 1
+                            await ctx.send(f"✅ Synced legacy entry from **{message.author.name}**.")
                 except Exception as e:
-                    print(f"[SYNC-FEHLER] Fehler bei {message.author.name}: {str(e)}")
+                    print(f"Sync skip on item error: {str(e)}")
 
-    await ctx.send(f"🏁 Sync abgeschlossen! Insgesamt {erfolgreiche_syncs} Spende(n) erfolgreich nachgetragen.")
+    await ctx.send(f"🏁 Sync cycle finalized. {success_count} item packages recorded.")
 
-@bot.command(name="clanstatus")
-async def clan_status(ctx, resource: str = None):
-    """Displays donation totals. Can be filtered by a specific resource. Admin channel only."""
-    # 1. Check if the command is executed in the Admin Channel
-    if ctx.channel.id != ADMIN_KANAL_ID:
-        await ctx.send("❌ This command can only be used in the admin channel.")
-        return
-
-    # Build the URL with an optional query parameter for the filter
-    request_url = WEBAPP_URL
-    if resource:
-        await ctx.send(f"📊 Fetching clan donation status filtered by: **{resource}**...")
-        # Passing the filter to Google Apps Script via URL parameters
-        request_url += f"?resource={resource}"
-    else:
-        await ctx.send("📊 Fetching complete clan donation overview...")
-
-    try:
-        # 2. Send GET request to Google Apps Script
-        response = requests.get(request_url)
-        
-        if response.status_code == 200:
-            res_data = response.json()
-            
-            if res_data.get("status") == "success":
-                donation_data = res_data.get("data", {})
-                
-                if not donation_data:
-                    if resource:
-                        await ctx.send(f"ℹ️ No donations found for the resource: **{resource}**.")
-                    else:
-                        await ctx.send("ℹ️ No donations have been registered in the sheet yet.")
-                    return
-                
-                # 3. Format the Discord Output Message in English
-                title_string = f"📋 **Clan Donation Status (Filtered by: {resource})**:\n" if resource else "📋 **Complete Clan Donation Overview**:\n"
-                output = title_string
-                output += "--------------------------------------------------\n"
-                
-                for player, items in donation_data.items():
-                    output += f"👤 **{player}**:\n"
-                    for item, amount in items.items():
-                        output += f"  ▫️ {amount}x {item}\n"
-                    output += "--------------------------------------------------\n"
-                
-                await ctx.send(output)
-            else:
-                await ctx.send(f"❌ Google Script Error: {res_data.get('message')}")
-        else:
-            await ctx.send(f"❌ HTTP Error: Connection to Google failed (Status: {response.status_code}).")
-            
-    except Exception as e:
-        await ctx.send(f"❌ An error occurred: {str(e)}")
-
-@bot.command(name="resources")
-async def list_resources(ctx):
-    """Lists all unique resource types currently stored in the spreadsheet."""
-    if ctx.channel.id != ADMIN_KANAL_ID:
-        await ctx.send("❌ This command can only be used in the admin channel.")
-        return
-
-    status_message = await ctx.send("🔍 Fetching available filter options...")
-    try:
-        response = requests.get(f"{WEBAPP_URL}?action=list")
-        if response.status_code == 200:
-            res_data = response.json()
-            if res_data.get("status") == "success":
-                resources = res_data.get("resources", [])
-                if not resources:
-                    await status_message.edit(content="ℹ️ No resources logged in the sheet yet.")
-                    return
-                
-                output = "💡 **Available Resource Filters:**\n"
-                output += "Use these values with `!clanstatus [name]`:\n```\n"
-                output += ", ".join(resources)
-                output += "\n```"
-                await status_message.edit(content=output)
-            else:
-                await status_message.edit(content=f"❌ Error: {res_data.get('message')}")
-        else:
-            await status_message.edit(content=f"❌ HTTP Error {response.status_code}")
-    except Exception as e:
-        await status_message.edit(content=f"❌ Failed to fetch recommendations: {str(e)}")
-
+# --- LAUNCH ---
 bot.run(TOKEN)
