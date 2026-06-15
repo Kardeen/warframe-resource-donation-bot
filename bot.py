@@ -6,8 +6,15 @@ from dotenv import dotenv_values
 
 secrets = dotenv_values(".env")
 
+# --- KONFIGURATION ---
 TOKEN = secrets["TOKEN"]
 WEBAPP_URL = secrets["WEBAPP_URL"]
+
+# Kanaleinstellungen
+SPENDEN_KANAL_NAME = "clan-spenden"    # Dein Spendenkanal-Name
+NUR_IM_SPENDENKANAL = True             # True = Bot reagiert live NUR im Spendenkanal
+                                       # False = Bot reagiert live in JEDEM Kanal
+ADMIN_KANAL_ID = 987654321098765432    # <-- ERSETZE DIES MIT DER ID DEINES ADMIN-CHANNELS
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -25,6 +32,10 @@ async def on_message(message):
     # Wichtig: Der Bot soll nicht auf seine eigenen Nachrichten reagieren
     if message.author == bot.user:
         return
+    
+    # Prüfen, ob der Kanal-Name übereinstimmt
+    if NUR_IM_SPENDENKANAL and message.channel.name != SPENDEN_KANAL_NAME:
+        return  # Ignoriert alles, was nicht in "clan-spenden" geschrieben wird
 
     # Prüfen, ob der Bot in der Nachricht erwähnt (getaggt) wurde
     if bot.user.mentioned_in(message):
@@ -143,5 +154,89 @@ async def sync_history(ctx):
                     print(f"[SYNC-FEHLER] Fehler bei {message.author.name}: {str(e)}")
 
     await ctx.send(f"🏁 Sync abgeschlossen! Insgesamt {erfolgreiche_syncs} Spende(n) erfolgreich nachgetragen.")
+
+@bot.command(name="clanstatus")
+async def clan_status(ctx, resource: str = None):
+    """Displays donation totals. Can be filtered by a specific resource. Admin channel only."""
+    # 1. Check if the command is executed in the Admin Channel
+    if ctx.channel.id != ADMIN_KANAL_ID:
+        await ctx.send("❌ This command can only be used in the admin channel.")
+        return
+
+    # Build the URL with an optional query parameter for the filter
+    request_url = WEBAPP_URL
+    if resource:
+        await ctx.send(f"📊 Fetching clan donation status filtered by: **{resource}**...")
+        # Passing the filter to Google Apps Script via URL parameters
+        request_url += f"?resource={resource}"
+    else:
+        await ctx.send("📊 Fetching complete clan donation overview...")
+
+    try:
+        # 2. Send GET request to Google Apps Script
+        response = requests.get(request_url)
+        
+        if response.status_code == 200:
+            res_data = response.json()
+            
+            if res_data.get("status") == "success":
+                donation_data = res_data.get("data", {})
+                
+                if not donation_data:
+                    if resource:
+                        await ctx.send(f"ℹ️ No donations found for the resource: **{resource}**.")
+                    else:
+                        await ctx.send("ℹ️ No donations have been registered in the sheet yet.")
+                    return
+                
+                # 3. Format the Discord Output Message in English
+                title_string = f"📋 **Clan Donation Status (Filtered by: {resource})**:\n" if resource else "📋 **Complete Clan Donation Overview**:\n"
+                output = title_string
+                output += "--------------------------------------------------\n"
+                
+                for player, items in donation_data.items():
+                    output += f"👤 **{player}**:\n"
+                    for item, amount in items.items():
+                        output += f"  ▫️ {amount}x {item}\n"
+                    output += "--------------------------------------------------\n"
+                
+                await ctx.send(output)
+            else:
+                await ctx.send(f"❌ Google Script Error: {res_data.get('message')}")
+        else:
+            await ctx.send(f"❌ HTTP Error: Connection to Google failed (Status: {response.status_code}).")
+            
+    except Exception as e:
+        await ctx.send(f"❌ An error occurred: {str(e)}")
+
+@bot.command(name="resources")
+async def list_resources(ctx):
+    """Lists all unique resource types currently stored in the spreadsheet."""
+    if ctx.channel.id != ADMIN_KANAL_ID:
+        await ctx.send("❌ This command can only be used in the admin channel.")
+        return
+
+    status_message = await ctx.send("🔍 Fetching available filter options...")
+    try:
+        response = requests.get(f"{WEBAPP_URL}?action=list")
+        if response.status_code == 200:
+            res_data = response.json()
+            if res_data.get("status") == "success":
+                resources = res_data.get("resources", [])
+                if not resources:
+                    await status_message.edit(content="ℹ️ No resources logged in the sheet yet.")
+                    return
+                
+                output = "💡 **Available Resource Filters:**\n"
+                output += "Use these values with `!clanstatus [name]`:\n```\n"
+                output += ", ".join(resources)
+                output += "\n```"
+                await status_message.edit(content=output)
+            else:
+                await status_message.edit(content=f"❌ Error: {res_data.get('message')}")
+        else:
+            await status_message.edit(content=f"❌ HTTP Error {response.status_code}")
+    except Exception as e:
+        await status_message.edit(content=f"❌ Failed to fetch recommendations: {str(e)}")
 
 bot.run(TOKEN)
