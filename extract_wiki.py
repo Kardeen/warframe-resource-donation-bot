@@ -13,7 +13,7 @@ def extract_resources():
 
         print("⚙️ Processing Lua lines via State-Machine Parser...")
         
-        resource_names = []
+        resource_names = ["Credits"]
         
         in_resource_data = False
         current_item_key = None
