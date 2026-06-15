@@ -287,5 +287,129 @@ async def sync_history(ctx):
 
     await ctx.send(f"🏁 Sync cycle finalized. {success_count} item packages recorded.")
 
+# --- ADMIN & UTILITY COMMANDS ---
+
+@bot.command(name="clanstatus")
+@commands.has_permissions(administrator=True)
+async def clan_status(ctx, *, filter_option: str = None):
+    """
+    Queries aggregated clan donations. 
+    Applies local fuzzy matching to shorthand inputs before requesting from Google Sheets.
+    """
+    if ctx.channel.id != ADMIN_KANAL_ID:
+        await ctx.send("⛔ This command can only be executed in the secure Admin Channel.")
+        return
+
+    status_msg = await ctx.send("🛰️ Querying aggregated Google Sheets database...")
+
+    url = WEBAPP_URL
+    cleaned_filter = None
+
+    if filter_option:
+        filter_option = filter_option.strip()
+        
+        # 1. Fuzzy match the user's input against your perfect resource file
+        match = process.extractOne(filter_option, RESOURCE_WHITELIST, scorer=fuzz.WRatio)
+        
+        if match:
+            matched_name, confidence, _ = match
+            # If the match is solid (score >= 70), overwrite the shorthand with the official name
+            if confidence >= 70:
+                cleaned_filter = matched_name
+                print(f"[ADMIN FUZZY MATCH] Mapped '{filter_option}' to '{cleaned_filter}' ({confidence:.1f}%)")
+            else:
+                # If confidence is low, assume they might be filtering by a player name instead
+                cleaned_filter = filter_option
+        else:
+            cleaned_filter = filter_option
+
+        # 2. Append the cleaned resource/player asset name to the URL query string
+        url += f"?resource={requests.utils.quote(cleaned_filter)}"
+
+    try:
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200:
+            res_data = response.json()
+            
+            if res_data.get("status") == "success" and res_data.get("data"):
+                overview_dict = res_data["data"]
+                
+                # Format report header using the clean name returned by Google or our fallback
+                display_filter = res_data.get('filteredResource') or cleaned_filter or 'None'
+                filter_text = f" (Filter: `{display_filter}`)" if res_data.get("filterActive") else ""
+                
+                report = [
+                    f"📊 **Clan Donation Overview Report**{filter_text}\n" + "—" * 40
+                ]
+                
+                for player, items in overview_dict.items():
+                    item_strings = [f"**{amount}x {item}**" for item, amount in items.items()]
+                    report.append(f"👤 `{player}`: {', '.join(item_strings)}")
+                
+                final_text = "\n".join(report)
+                if len(final_text) > 2000:
+                    await status_msg.edit(content="⚠️ Data summary is too large to fit in a Discord message. Check the Sheet directly!")
+                else:
+                    await status_msg.edit(content=final_text)
+            else:
+                # Provide a helpful error if it found nothing
+                await status_msg.edit(content=f"🔍 No aggregated records found matching filter: `{cleaned_filter}`")
+        else:
+            await status_msg.edit(content=f"❌ Database error. HTTP Status: {response.status_code}")
+            
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Script connection error: {str(e)}")
+
+@bot.command(name="resourcefields")
+@commands.has_permissions(administrator=True)
+async def resource_fields(ctx, *, search_term: str = None):
+    """
+    Helper method: Lists valid resource filters.
+    If search_term is provided, it searches the Master Whitelist.
+    If no term is provided, it dynamically polls Google Sheets for what has *actually* been donated via ?action=list.
+    """
+    if ctx.channel.id != ADMIN_KANAL_ID:
+        await ctx.send("⛔ This utility method is restricted to the Admin Channel.")
+        return
+
+    # Option A: User provided a keyword search -> Check the local file
+    if search_term:
+        search_term = search_term.strip()
+        matches = [item for item in RESOURCE_WHITELIST if search_term.lower() in item.lower()]
+        
+        if not matches:
+            await ctx.send(f"❌ No official Warframe resource contains the phrase text: `{search_term}`")
+            return
+            
+        output = [f"🔍 **Matching Master Whitelist Keywords for '{search_term}':**", "—" * 40]
+        output.extend([f"▫️ {item}" for item in matches[:30]]) # Cap at 30 to prevent spam
+        if len(matches) > 30:
+            output.append(f"\n*...and {len(matches) - 30} more exact matches.*")
+            
+        await ctx.send("\n".join(output))
+        return
+
+    # Option B: No parameter -> Use your NEW action=list code to see what's currently in the sheet!
+    status_msg = await ctx.send("📡 Fetching active logged resources from Google Sheets...")
+    try:
+        response = requests.get(f"{WEBAPP_URL}?action=list", timeout=15)
+        if response.status_code == 200:
+            res_data = response.json()
+            
+            if res_data.get("status") == "success" and res_data.get("resources"):
+                active_resources = res_data["resources"]
+                
+                output = ["📋 **Currently Logged Resources inside Spreadsheet:**", "—" * 40]
+                output.extend([f"▫️ {r}" for r in active_resources])
+                output.append(f"\n💡 *Tip: Use `!clanstatus [Item Name]` to filter the overview report for any of these!*")
+                
+                await status_msg.edit(content="\n".join(output))
+            else:
+                await status_msg.edit(content="📦 The spreadsheet does not contain any valid recorded resource rows yet.")
+        else:
+            await status_msg.edit(content="❌ Failed to retrieve resource list from Google Sheets.")
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Network Error: {str(e)}")
+
 # --- LAUNCH ---
 bot.run(TOKEN)
