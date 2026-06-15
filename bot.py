@@ -43,47 +43,121 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 def clean_and_validate_ocr(raw_text_lines, threshold=75):
     """
-    Scans raw OCR text blocks for patterns like '31 x Cryotic' or '10 Credits'.
-    Cross-references resource names with the local whitelist using fuzzy matching.
+    Two-Pass Hybrid Parser:
+    Pass 1: Scans for exact matches or explicit shorthand words from the whitelist.
+    Pass 2: Uses fuzzy matching on remaining text chunks for OCR typos/misspellings.
+    Finally: Binds each discovered item to its closest preceding unclaimed number.
     """
     detected_items = []
     
-    # --- DEBUGGING LOGS ---
-    print("\n--- [OCR DEBUG: RAW DETECTED LINES] ---")
-    for idx, line in enumerate(raw_text_lines):
-        print(f"Line {idx}: '{line}'")
-    print("---------------------------------------\n")
-    # ----------------------
-
-    # EasyOCR fix: Clean spaces and stitch lines together into one big block
-    # We replace multiple spaces or weird line breaks around 'x' to help regex catch it
-    combined_text = "\n".join(raw_text_lines)
+    # Merge lines into a single normalized text stream
+    combined_text = " ".join(raw_text_lines)
+    combined_text = re.sub(r'\s+', ' ', combined_text).strip()
     
-    # Pattern 1: Standard Items (e.g., "31 x Cryotic" or "5000 x Alloy Plate")
-    regex_items = re.findall(r'(\d+)\s*[xX]\s*([^|$\n\(\)]+)', combined_text)
-    for amount, raw_name in regex_items:
-        raw_name = raw_name.strip()
+    print(f"\n--- [PARSER DEBUG: TWO-PASS HYBRID ENGINE] ---")
+    print(f"Stream: '{combined_text}'\n------------------------------------------------")
+
+    # Sort whitelist by length descending to check longer names first
+    sorted_whitelist = sorted(RESOURCE_WHITELIST, key=len, reverse=True)
+    
+    # Track which text positions (indices) and number values have been claimed
+    claimed_text_ranges = [] # list of (start_idx, end_idx)
+    claimed_number_positions = set()
+
+    def is_text_claimed(start, end):
+        return any(s < end and start < e for s, e in claimed_text_ranges)
+
+    # =========================================================================
+    # PASS 1: EXACT MATCHING & EXPLICIT SHORTHAND
+    # =========================================================================
+    for official_item in sorted_whitelist:
+        item_words = official_item.split()
         
-        # Skip garbage UI matches
-        if any(word in raw_name.lower() for word in ["direct vault", "donation", "credits", "cancel"]):
-            continue
+        # Look for the exact full name
+        pattern_full = rf'\b{re.escape(official_item)}\b'
+        for match in re.finditer(pattern_full, combined_text, re.IGNORECASE):
+            start, end = match.start(), match.end()
             
-        # Fuzzy Match against our whitelist
-        match = process.extractOne(raw_name, RESOURCE_WHITELIST, scorer=fuzz.WRatio)
+            if not is_text_claimed(start, end):
+                # Bind to closest number
+                preceding_text = combined_text[max(0, start - 30):start]
+                num_matches = list(re.finditer(r'\b\d+\b', preceding_text))
+                
+                if num_matches:
+                    closest_num = num_matches[-1]
+                    global_num_pos = max(0, start - 30) + closest_num.start()
+                    
+                    if global_num_pos not in claimed_number_positions:
+                        detected_items.append({"amount": int(closest_num.group()), "item": official_item})
+                        claimed_number_positions.add(global_num_pos)
+                        claimed_text_ranges.append((start, end))
+                        print(f"[PASS 1 EXACT] Found: '{official_item}' -> Amount: {closest_num.group()}")
+
+        # Look for distinct first-word shorthand if it's a long item name
+        if len(item_words) > 1 and len(item_words[0]) > 4:
+            pattern_short = rf'\b{re.escape(item_words[0])}\b'
+            for match in re.finditer(pattern_short, combined_text, re.IGNORECASE):
+                start, end = match.start(), match.end()
+                
+                if not is_text_claimed(start, end):
+                    preceding_text = combined_text[max(0, start - 30):start]
+                    num_matches = list(re.finditer(r'\b\d+\b', preceding_text))
+                    
+                    if num_matches:
+                        closest_num = num_matches[-1]
+                        global_num_pos = max(0, start - 30) + closest_num.start()
+                        
+                        if global_num_pos not in claimed_number_positions:
+                            detected_items.append({"amount": int(closest_num.group()), "item": official_item})
+                            claimed_number_positions.add(global_num_pos)
+                            claimed_text_ranges.append((start, end))
+                            print(f"[PASS 1 SHORTHAND] Found: '{official_item}' (via '{item_words[0]}') -> Amount: {closest_num.group()}")
+
+    # =========================================================================
+    # PASS 2: FUZZY FALLBACK (For OCR Typos on remaining unclaimed words)
+    # =========================================================================
+    # Words we want to explicitly ignore so they never trigger false fuzzy matches
+    UI_WORD_BLACKLIST = ["dojo", "cancel", "ok", "refunded", "contribution", "contributions", "never", "sure"]
+
+    words = combined_text.split(" ")
+    current_char_pos = 0
+
+    for i, word in enumerate(words):
+        word_len = len(word)
+        word_start = current_char_pos
+        word_end = word_start + word_len
+        current_char_pos = word_end + 1
+
+        if is_text_claimed(word_start, word_end):
+            continue
+
+        clean_word = re.sub(r'^\d+\s*[xX]?\s*|\b\d+\b|[.,;:!]', '', word).strip()
+        
+        # FIX: Skip the word entirely if it matches something on our UI noise blacklist
+        if clean_word.lower() in UI_WORD_BLACKLIST or len(clean_word) < 4:
+            continue
+
+        # Fuzzy match continues down here safely...
+        match = process.extractOne(clean_word, sorted_whitelist, scorer=fuzz.WRatio)
         if match:
             matched_name, confidence, _ = match
             if confidence >= threshold:
-                detected_items.append({"amount": int(amount), "item": matched_name})
-                print(f"[MATCH SUCCESS] Found Item: {amount}x {matched_name} (Confidence: {confidence:.1f}%)")
-            else:
-                print(f"[MATCH REJECTED] Found '{raw_name}' but match to '{matched_name}' was too low ({confidence:.1f}%)")
-
-    # Pattern 2: Vault Credits confirmation screen (e.g., "10 Credits to your CLAN Vault")
-    regex_credits = re.search(r'(\d+)\s*credits', combined_text, re.IGNORECASE)
-    if regex_credits:
-        credit_amount = regex_credits.group(1)
-        detected_items.append({"amount": int(credit_amount), "item": "Credits"})
-        print(f"[MATCH SUCCESS] Found Credits: {credit_amount}x Credits")
+                # Check if we already registered this item type in Pass 1
+                if not any(d['item'] == matched_name for d in detected_items):
+                    
+                    # Look backward for an unclaimed number
+                    preceding_text = combined_text[max(0, word_start - 30):word_start]
+                    num_matches = list(re.finditer(r'\b\d+\b', preceding_text))
+                    
+                    if num_matches:
+                        closest_num = num_matches[-1]
+                        global_num_pos = max(0, word_start - 30) + closest_num.start()
+                        
+                        if global_num_pos not in claimed_number_positions:
+                            detected_items.append({"amount": int(closest_num.group()), "item": matched_name})
+                            claimed_number_positions.add(global_num_pos)
+                            claimed_text_ranges.append((word_start, word_end))
+                            print(f"[PASS 2 FUZZY] Matched '{clean_word}' to '{matched_name}' ({confidence:.1f}%) -> Amount: {closest_num.group()}")
 
     return detected_items
 
@@ -98,46 +172,68 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Filter live processing by channel
+    # Check if the bot is allowed to process messages in this channel
     if not NUR_IM_SPENDENKANAL or message.channel.id == SPENDEN_KANAL_ID:
-        if bot.user.mentioned_in(message) and message.attachments:
-            for attachment in message.attachments:
-                filename = attachment.filename.lower()
-                if filename.endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    
-                    status_msg = await message.channel.send("🔄 Local OCR engine is reading image pixels...")
-                    
-                    try:
-                        # 1. Download image into system memory bytes
-                        image_bytes = await attachment.read()
-                        
-                        # 2. Execute Local OCR Extraction
-                        ocr_results = reader.readtext(image_bytes, detail=0) # detail=0 returns just raw string lines
-                        
-                        # 3. Clean and run Whitelist validation filter
-                        verified_donations = clean_and_validate_ocr(ocr_results)
-                        
-                        if not verified_donations:
-                            await status_msg.edit(content="⚠️ No valid Warframe resources detected in this image layout.")
-                            continue
-                        
-                        # 4. Prepare clear payload package for Google Sheets
-                        payload = {
-                            "username": str(message.author.name),
-                            "donations": verified_donations # Sending a clean array structure
-                        }
-                        
-                        response = requests.post(WEBAPP_URL, json=payload)
-                        
-                        if response.status_code == 200 and response.json().get("status") == "success":
-                            details = "\n".join([f"▫️ {d['amount']}x {d['item']}" for d in verified_donations])
-                            await status_msg.edit(content=f"✅ **Donation registered via Local OCR!**\n👤 Player: {message.author.name}\n{details}")
-                        else:
-                            await status_msg.edit(content="❌ Data processing failed at Google Sheets layer.")
-                            
-                    except Exception as e:
-                        await status_msg.edit(content=f"❌ OCR Runtime Error: {str(e)}")
+        
+        # Trigger processing if the bot is explicitly mentioned
+        if bot.user.mentioned_in(message):
+            raw_lines_to_process = []
+            status_msg = None
 
+            # --- PATH A: HANDLE TEXT MESSAGE CONTENT ---
+            # Remove the bot's mention tag (e.g., <@123456789>) so it doesn't mess up parsing
+            clean_text = re.sub(r'<@!?\d+>', '', message.content).strip()
+            
+            if clean_text:
+                # Split the text message by commas, semicolons, or newlines 
+                # This lets users type: "10x Salvage, 500 Credits, 10x Cryotic"
+                text_lines = re.split(r'[,;\n]', clean_text)
+                raw_lines_to_process.extend([line.strip() for line in text_lines if line.strip()])
+
+            # --- PATH B: HANDLE IMAGE ATTACHMENTS ---
+            if message.attachments:
+                for attachment in message.attachments:
+                    filename = attachment.filename.lower()
+                    if filename.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        if not status_msg:
+                            status_msg = await message.channel.send("🔄 Processing data (Image OCR engine active)...")
+                        
+                        try:
+                            image_bytes = await attachment.read()
+                            ocr_results = reader.readtext(image_bytes, detail=0)
+                            raw_lines_to_process.extend(ocr_results)
+                        except Exception as e:
+                            print(f"OCR Error: {str(e)}")
+
+            # --- PROCESSING LAYER ---
+            if raw_lines_to_process:
+                if not status_msg:
+                    status_msg = await message.channel.send("🔄 Processing your text entry...")
+
+                # Run the exact same validation engine!
+                verified_donations = clean_and_validate_ocr(raw_lines_to_process)
+                
+                if not verified_donations:
+                    await status_msg.edit(content="⚠️ No valid Warframe resources or amounts recognized in your input.")
+                    return
+
+                # Send clean package to Google Sheets
+                payload = {
+                    "username": str(message.author.name),
+                    "donations": verified_donations
+                }
+                
+                try:
+                    response = requests.post(WEBAPP_URL, json=payload)
+                    if response.status_code == 200 and response.json().get("status") == "success":
+                        details = "\n".join([f"▫️ {d['amount']}x {d['item']}" for d in verified_donations])
+                        await status_msg.edit(content=f"✅ **Donation registered!**\n👤 Player: {message.author.name}\n{details}")
+                    else:
+                        await status_msg.edit(content="❌ Data processing failed at Google Sheets layer.")
+                except Exception as e:
+                    await status_msg.edit(content=f"❌ Network Error connecting to Google: {str(e)}")
+
+    # Allow standard prefix commands (!clanstatus, !sync) to still process properly
     await bot.process_commands(message)
 
 # --- BOT COMMANDS ---
