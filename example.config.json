@@ -1,0 +1,8 @@
+{
+  "TOKEN": "YOUR_DISCORD_BOT_TOKEN_HERE",
+  "WEBAPP_URL": "https://script.google.com/macros/s/.../exec",
+  "ADMIN_KANAL_ID": 1516161234570528791,
+  "SPENDEN_KANAL_ID": 15161612345712643586,
+  "NUR_IM_SPENDENKANAL": true,
+  "RESOURCES_FILE": "warframe_resources.txt"
+}

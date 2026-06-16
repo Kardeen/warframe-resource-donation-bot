@@ -5,22 +5,36 @@ import discord
 from discord.ext import commands
 import easyocr
 from rapidfuzz import process, fuzz
-from dotenv import dotenv_values
+import json
 
-# --- CONFIGURATION ---
-secrets = dotenv_values(".env")
+def sync_global_config():
+    """Reads config.json and forces the global variables to update to the latest GUI values."""
+    global WEBAPP_URL, ADMIN_KANAL_ID, SPENDEN_KANAL_ID, NUR_IM_SPENDENKANAL
+    
+    config = get_live_config()
+    WEBAPP_URL = config["WEBAPP_URL"]
+    ADMIN_KANAL_ID = config["ADMIN_KANAL_ID"]
+    SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
+    NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
 
-TOKEN = secrets["TOKEN"]
-WEBAPP_URL = secrets["WEBAPP_URL"]
+# --- NEW CONFIGURATION LOADER ---
+def get_live_config():
+    with open("config.json", "r") as f:
+        return json.load(f)
 
-# Channel Restrictions
-ADMIN_KANAL_ID = 1516160408170528791    # Replace with your Admin Channel ID
-SPENDEN_KANAL_ID = 1516100470584643586  # Replace with your Spenden Channel ID
-NUR_IM_SPENDENKANAL = True
+config = get_live_config()
 
-# Whitelist Config
-RESOURCES_FILE = "warframe_resources.txt"
+# Read running values instantly from file properties layout
+WEBAPP_URL = config["WEBAPP_URL"]
+ADMIN_KANAL_ID = config["ADMIN_KANAL_ID"]
+SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
+NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
+
+RESOURCES_FILE = config["RESOURCES_FILE"]
 RESOURCE_WHITELIST = []
+
+# Inside your functions, whenever you read channels dynamically or want runtime updates, 
+# you can re-call get_live_config() or let the bot restart to take full config changes!
 
 if os.path.exists(RESOURCES_FILE):
     with open(RESOURCES_FILE, "r", encoding="utf-8") as f:
@@ -184,6 +198,9 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
+    
+    # 🔄 Refresh all global variables right before processing anything
+    sync_global_config()
 
     # Check if the bot is allowed to process messages in this channel
     if not NUR_IM_SPENDENKANAL or message.channel.id == SPENDEN_KANAL_ID:
@@ -579,4 +596,7 @@ async def vault_consume(ctx, *, message_content: str):
         await status_msg.edit(content=f"❌ Network transmission error: {str(e)}")
 
 # --- LAUNCH ---
-bot.run(TOKEN)
+if __name__ == "__main__":
+    # This only runs if you execute 'python test_bot.py' manually via terminal
+    live_config = get_live_config()
+    bot.run(live_config["TOKEN"])
