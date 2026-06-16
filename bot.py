@@ -68,18 +68,17 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
         return any(s < end and start < e for s, e in claimed_text_ranges)
 
     # =========================================================================
-    # PASS 1: EXACT MATCHING & EXPLICIT SHORTHAND
+    # PASS 1: EXACT MATCHING & EXPLICIT SHORTHAND (Case-Insensitive)
     # =========================================================================
     for official_item in sorted_whitelist:
         item_words = official_item.split()
         
-        # Look for the exact full name
+        # Look for the exact full name (Using re.IGNORECASE)
         pattern_full = rf'\b{re.escape(official_item)}\b'
         for match in re.finditer(pattern_full, combined_text, re.IGNORECASE):
             start, end = match.start(), match.end()
             
             if not is_text_claimed(start, end):
-                # Bind to closest number
                 preceding_text = combined_text[max(0, start - 30):start]
                 num_matches = list(re.finditer(r'\b\d+\b', preceding_text))
                 
@@ -113,16 +112,16 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
                             claimed_text_ranges.append((start, end))
                             print(f"[PASS 1 SHORTHAND] Found: '{official_item}' (via '{item_words[0]}') -> Amount: {closest_num.group()}")
 
+# =========================================================================
+    # PASS 2: FUZZY FALLBACK (Case-Insensitive Typos & Multi-Word Items)
     # =========================================================================
-    # PASS 2: FUZZY FALLBACK (For OCR Typos on remaining unclaimed words)
-    # =========================================================================
-    # Words we want to explicitly ignore so they never trigger false fuzzy matches
     UI_WORD_BLACKLIST = ["dojo", "cancel", "ok", "refunded", "contribution", "contributions", "never", "sure"]
 
     words = combined_text.split(" ")
+    unclaimed_words = []
     current_char_pos = 0
 
-    for i, word in enumerate(words):
+    for word in words:
         word_len = len(word)
         word_start = current_char_pos
         word_end = word_start + word_len
@@ -132,32 +131,46 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
             continue
 
         clean_word = re.sub(r'^\d+\s*[xX]?\s*|\b\d+\b|[.,;:!]', '', word).strip()
-        
-        # FIX: Skip the word entirely if it matches something on our UI noise blacklist
-        if clean_word.lower() in UI_WORD_BLACKLIST or len(clean_word) < 4:
+        if clean_word.lower() in UI_WORD_BLACKLIST or len(clean_word) < 3:
+            continue
+            
+        unclaimed_words.append((clean_word, word_start))
+
+    # Fuzzy match each leftover word against the whitelist
+    for clean_word, word_start in unclaimed_words:
+        if any(d['item'] == clean_word for d in detected_items):
             continue
 
-        # Fuzzy match continues down here safely...
-        match = process.extractOne(clean_word, sorted_whitelist, scorer=fuzz.WRatio)
-        if match:
-            matched_name, confidence, _ = match
-            if confidence >= threshold:
-                # Check if we already registered this item type in Pass 1
-                if not any(d['item'] == matched_name for d in detected_items):
-                    
-                    # Look backward for an unclaimed number
-                    preceding_text = combined_text[max(0, word_start - 30):word_start]
-                    num_matches = list(re.finditer(r'\b\d+\b', preceding_text))
-                    
-                    if num_matches:
-                        closest_num = num_matches[-1]
-                        global_num_pos = max(0, word_start - 30) + closest_num.start()
-                        
-                        if global_num_pos not in claimed_number_positions:
-                            detected_items.append({"amount": int(closest_num.group()), "item": matched_name})
-                            claimed_number_positions.add(global_num_pos)
-                            claimed_text_ranges.append((word_start, word_end))
-                            print(f"[PASS 2 FUZZY] Matched '{clean_word}' to '{matched_name}' ({confidence:.1f}%) -> Amount: {closest_num.group()}")
+        best_match = None
+        best_score = 0
+
+        # FIX: We loop through the whitelist and lowercase everything during the score check
+        # to force rapidfuzz.fuzz.partial_ratio to ignore casing entirely.
+        for official_item in sorted_whitelist:
+            # Calculate the partial ratio score on purely lowercased versions of both strings
+            score = fuzz.partial_ratio(clean_word.lower(), official_item.lower())
+            
+            adjusted_threshold = threshold if len(clean_word) > 4 else 85
+            
+            if score >= adjusted_threshold and score > best_score:
+                # Secondary validation: confirm a high character overlap ratio
+                token_score = fuzz.token_set_ratio(clean_word.lower(), official_item.lower())
+                if token_score >= 40:
+                    best_score = score
+                    best_match = official_item # Keep the pristine, correctly capitalized master name!
+
+        if best_match:
+            preceding_text = combined_text[max(0, word_start - 30):word_start]
+            num_matches = list(re.finditer(r'\b\d+\b', preceding_text))
+            
+            if num_matches:
+                closest_num = num_matches[-1]
+                global_num_pos = max(0, word_start - 30) + closest_num.start()
+                
+                if global_num_pos not in claimed_number_positions:
+                    detected_items.append({"amount": int(closest_num.group()), "item": best_match})
+                    claimed_number_positions.add(global_num_pos)
+                    print(f"[PASS 2 FUZZY SUCCESS] Matched typo/variant '{clean_word}' ➔ '{best_match}' ({best_score:.1f}%)")
 
     return detected_items
 
