@@ -3,9 +3,8 @@ function doGet(e) {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
     var data = sheet.getDataRange().getValues();
     
-    // NEW: Check if the bot wants a list of available resource names
+    // 1. Check for Action List request (Keep your existing feature untouched!)
     var action = (e && e.parameter && e.parameter.action) ? e.parameter.action.toLowerCase().trim() : null;
-    
     if (action === "list") {
       var uniqueResources = [];
       for (var i = 1; i < data.length; i++) {
@@ -20,44 +19,55 @@ function doGet(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    var data = sheet.getDataRange().getValues();
-    
-    // Check if the bot sent a specific resource filter (e.g., !clanstatus cryotic)
-    // We convert it to lowercase to make the search case-insensitive
+    // 2. Extract Query Parameters
     var resourceFilter = (e && e.parameter && e.parameter.resource) ? e.parameter.resource.toLowerCase().trim() : null;
+    var playerFilter = (e && e.parameter && e.parameter.player) ? e.parameter.player.toLowerCase().trim() : null;
+    var targetEngine = (e && e.parameter && e.parameter.target) ? e.parameter.target.toLowerCase().trim() : "player"; 
     
-    var overview = {};
-    
-    // Loop through rows starting from row 2 (Index 1)
+    var startDate = (e && e.parameter && e.parameter.start) ? new Date(e.parameter.start + "T00:00:00") : null;
+    var endDate = (e && e.parameter && e.parameter.end) ? new Date(e.parameter.end + "T23:59:59") : null;
+
+    var playerOverview = {}; 
+    var globalOverview = {}; 
+
+    // 3. Loop through logs starting from row 2 (Index 1)
     for (var i = 1; i < data.length; i++) {
-      var player = data[i][1]; // Column B
-      var item = data[i][2];   // Column C
-      var amount = parseInt(data[i][3]); // Column D
+      var timestamp = new Date(data[i][0]); // Column A
+      var player = data[i][1];             // Column B
+      var item = data[i][2];               // Column C
+      var amount = parseInt(data[i][3]);   // Column D
       
       if (!player || !item || isNaN(amount)) continue;
       
-      // If a filter is active, skip any item that doesn't match the filter
-      if (resourceFilter && item.toLowerCase().trim() !== resourceFilter) {
-        continue;
-      }
+      // Filter 1: Date Range check
+      if (startDate && timestamp < startDate) continue;
+      if (endDate && timestamp > endDate) continue;
       
-      // Build the nested object: overview[player][item] = total_amount
-      if (!overview[player]) {
-        overview[player] = {};
-      }
-      if (!overview[player][item]) {
-        overview[player][item] = 0;
-      }
+      // Filter 2: Explicit Player check (Case-insensitive partial match)
+      if (playerFilter && player.toLowerCase().trim().indexOf(playerFilter) === -1) continue;
       
-      overview[player][item] += amount;
+      // Filter 3: Explicit Resource Asset check
+      if (resourceFilter && item.toLowerCase().trim() !== resourceFilter) continue;
+      
+      // Accumulate Data
+      if (targetEngine === "global") {
+        if (!globalOverview[item]) globalOverview[item] = 0;
+        globalOverview[item] += amount;
+      } else {
+        if (!playerOverview[player]) playerOverview[player] = {};
+        if (!playerOverview[player][item]) playerOverview[player][item] = 0;
+        playerOverview[player][item] += amount;
+      }
     }
     
+    // 4. Dispatch specific structural payload formatting back to Python
     return ContentService.createTextOutput(JSON.stringify({
       "status": "success",
+      "target": targetEngine,
       "filterActive": resourceFilter !== null,
       "filteredResource": resourceFilter,
-      "data": overview
+      "dateFilterActive": (startDate !== null || endDate !== null),
+      "data": (targetEngine === "global") ? globalOverview : playerOverview
     })).setMimeType(ContentService.MimeType.JSON);
     
   } catch (error) {

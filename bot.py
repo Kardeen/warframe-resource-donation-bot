@@ -238,127 +238,110 @@ async def on_message(message):
 
 # --- BOT COMMANDS ---
 
-@bot.command(name="sync")
-@commands.has_permissions(administrator=True)
-async def sync_history(ctx):
-    """Processes historical channel messages using local Python OCR, ignoring already confirmed segments."""
-    status_msg = await ctx.send("🔄 Analyzing channel history for missing donations...")
-    
-    letzte_bot_nachricht = None
-    verpasste_nachrichten = []
-    
-    async for message in ctx.channel.history(limit=200):
-        if message.author == bot.user and "Analyzing" not in message.content:
-            letzte_bot_nachricht = message
-            break
-
-    if letzte_bot_nachricht:
-        async for message in ctx.channel.history(after=letzte_bot_nachricht, limit=100, oldest_first=True):
-            if message.attachments and message.author != bot.user:
-                verpasste_nachrichten.append(message)
-    else:
-        async for message in ctx.channel.history(limit=50, oldest_first=True):
-            if message.attachments and message.author != bot.user:
-                verpasste_nachrichten.append(message)
-
-    if not verpasste_nachrichten:
-        await status_msg.edit(content="✨ System up to date. No unprocessed layouts found.")
-        return
-
-    await status_msg.edit(content=f"📦 Found {len(verpasste_nachrichten)} pending layout instances. Running OCR queue...")
-    
-    success_count = 0
-    for message in verpasste_nachrichten:
-        for attachment in message.attachments:
-            if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                try:
-                    img_data = await attachment.read()
-                    lines = reader.readtext(img_data, detail=0)
-                    verified = clean_and_validate_ocr(lines)
-                    
-                    if verified:
-                        payload = {"username": str(message.author.name), "donations": verified}
-                        res = requests.post(WEBAPP_URL, json=payload)
-                        if res.status_code == 200 and res.json().get("status") == "success":
-                            success_count += 1
-                            await ctx.send(f"✅ Synced legacy entry from **{message.author.name}**.")
-                except Exception as e:
-                    print(f"Sync skip on item error: {str(e)}")
-
-    await ctx.send(f"🏁 Sync cycle finalized. {success_count} item packages recorded.")
-
-# --- ADMIN & UTILITY COMMANDS ---
-
 @bot.command(name="clanstatus")
 @commands.has_permissions(administrator=True)
-async def clan_status(ctx, *, filter_option: str = None):
+async def clan_status(ctx, *, args: str = None):
     """
-    Queries aggregated clan donations. 
-    Applies local fuzzy matching to shorthand inputs before requesting from Google Sheets.
+    Advanced Inventory Status Query with explicit flags.
+    Syntax Examples:
+      !clanstatus global oxides
+      !clanstatus player=laury oxides start=2026-06-01
     """
     if ctx.channel.id != ADMIN_KANAL_ID:
         await ctx.send("⛔ This command can only be executed in the secure Admin Channel.")
         return
 
-    status_msg = await ctx.send("🛰️ Querying aggregated Google Sheets database...")
+    # --- 1. PARAMETER EXTRACTION ENGINE ---
+    target = "player"
+    player_filter = None
+    resource_filter = None
+    start_date = None
+    end_date = None
 
-    url = WEBAPP_URL
-    cleaned_filter = None
+    if args:
+        # Check for mutual exclusion upfront
+        if "global" in args.lower() and "player=" in args.lower():
+            await ctx.send("❌ **Invalid Parameter Conflict**: You cannot request a `global` summation summary while filtering for a specific individual `player=` simultaneously.")
+            return
 
-    if filter_option:
-        filter_option = filter_option.strip()
+        # Extract explicit key-value parameters using regex patterns
+        start_match = re.search(r'start=(\d{4}-\d{2}-\d{2})', args, re.IGNORECASE)
+        end_match = re.search(r'end=(\d{4}-\d{2}-\d{2})', args, re.IGNORECASE)
+        player_match = re.search(r'player=([^\s]+)', args, re.IGNORECASE) # Captures up to the next space
         
-        # 1. Fuzzy match the user's input against your perfect resource file
-        match = process.extractOne(filter_option, RESOURCE_WHITELIST, scorer=fuzz.WRatio)
-        
-        if match:
-            matched_name, confidence, _ = match
-            # If the match is solid (score >= 70), overwrite the shorthand with the official name
-            if confidence >= 70:
-                cleaned_filter = matched_name
-                print(f"[ADMIN FUZZY MATCH] Mapped '{filter_option}' to '{cleaned_filter}' ({confidence:.1f}%)")
-            else:
-                # If confidence is low, assume they might be filtering by a player name instead
-                cleaned_filter = filter_option
-        else:
-            cleaned_filter = filter_option
+        if start_match: start_date = start_match.group(1)
+        if end_match: end_date = end_match.group(1)
+        if player_match: player_filter = player_match.group(1).strip()
 
-        # 2. Append the cleaned resource/player asset name to the URL query string
-        url += f"?resource={requests.utils.quote(cleaned_filter)}"
+        # Clean all explicit tokens completely out of the string arguments
+        clean_args = re.sub(r'(start|end)=\d{4}-\d{2}-\d{2}', '', args, flags=re.IGNORECASE)
+        clean_args = re.sub(r'player=[^\s]+', '', clean_args, flags=re.IGNORECASE).strip()
+        
+        words = clean_args.split()
+
+        if words:
+            # Check and strip global flag
+            if "global" in [w.lower() for w in words]:
+                target = "global"
+                words = [w for w in words if w.lower() != "global"]
+
+            # Remaining unflagged text MUST be the resource name!
+            if words:
+                remaining_phrase = " ".join(words).strip()
+                match = process.extractOne(remaining_phrase, RESOURCE_WHITELIST, scorer=fuzz.WRatio)
+                if match and match[1] >= 75:
+                    resource_filter = match[0]
+                    print(f"[ADMIN FUZZY MATCH] Mapped input '{remaining_phrase}' to asset '{resource_filter}' ({match[1]:.1f}%)")
+
+    # --- 2. QUERY LAYER DISPATCH ---
+    status_msg = await ctx.send("🛰️ Interrogating vault database engine metrics...")
+
+    params = {"target": target}
+    if resource_filter: params["resource"] = resource_filter
+    if player_filter: params["player"] = player_filter
+    if start_date: params["start"] = start_date
+    if end_date: params["end"] = end_date
 
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(WEBAPP_URL, params=params, timeout=15)
         if response.status_code == 200:
             res_data = response.json()
             
             if res_data.get("status") == "success" and res_data.get("data"):
-                overview_dict = res_data["data"]
+                payload_data = res_data["data"]
                 
-                # Format report header using the clean name returned by Google or our fallback
-                display_filter = res_data.get('filteredResource') or cleaned_filter or 'None'
-                filter_text = f" (Filter: `{display_filter}`)" if res_data.get("filterActive") else ""
-                
-                report = [
-                    f"📊 **Clan Donation Overview Report**{filter_text}\n" + "—" * 40
-                ]
-                
-                for player, items in overview_dict.items():
-                    item_strings = [f"**{amount}x {item}**" for item, amount in items.items()]
-                    report.append(f"👤 `{player}`: {', '.join(item_strings)}")
-                
+                # Header formatting
+                header = f"📊 **Clan Donation Report Summary** (`Target: {target.upper()}`)\n"
+                if start_date or end_date:
+                    header += f"📅 Window: `{start_date or 'Beginning'} ➔ {end_date or 'Present'}`\n"
+                if resource_filter:
+                    header += f"🔍 Resource Filter: `{resource_filter}`\n"
+                if player_filter:
+                    header += f"👤 Player Filter: `{player_filter}`\n"
+                header += "—" * 40 + "\n"
+
+                report = [header]
+
+                if target == "global":
+                    for item, total in payload_data.items():
+                        report.append(f"📦 Total **{total}x {item}** donated.")
+                else:
+                    for player, items in payload_data.items():
+                        item_strings = [f"**{amount}x {item}**" for item, amount in items.items()]
+                        if item_strings:
+                            report.append(f"👤 `{player}`: {', '.join(item_strings)}")
+
                 final_text = "\n".join(report)
                 if len(final_text) > 2000:
-                    await status_msg.edit(content="⚠️ Data summary is too large to fit in a Discord message. Check the Sheet directly!")
+                    await status_msg.edit(content="⚠️ Output too massive to display over Discord. Reduce date windows.")
                 else:
                     await status_msg.edit(content=final_text)
             else:
-                # Provide a helpful error if it found nothing
-                await status_msg.edit(content=f"🔍 No aggregated records found matching filter: `{cleaned_filter}`")
+                await status_msg.edit(content=f"🔍 No records matched your search parameters.")
         else:
-            await status_msg.edit(content=f"❌ Database error. HTTP Status: {response.status_code}")
-            
+            await status_msg.edit(content=f"❌ Network Error. HTTP Status: {response.status_code}")
     except Exception as e:
-        await status_msg.edit(content=f"❌ Script connection error: {str(e)}")
+        await status_msg.edit(content=f"❌ Script error executing search: {str(e)}")
 
 @bot.command(name="resourcefields")
 @commands.has_permissions(administrator=True)
