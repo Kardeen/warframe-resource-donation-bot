@@ -95,15 +95,16 @@ function doPost(e) {
     var donations = payload.donations;     // Array of {amount: X, item: "Y"}
     var username = payload.username || "System";
     
-    var timestamp = new Date();
-
     // ==========================================
     // ACTION A: STANDARD DONATION LOGGING
     // ==========================================
     if (action === "log") {
+      // FIX: Check if the payload contains an explicit timestamp, otherwise use server time
+      var recordDate = payload.timestamp ? new Date(payload.timestamp) : new Date();
+
       for (var i = 0; i < donations.length; i++) {
-        // 1. Append row to continuous log stream
-        logSheet.appendRow([timestamp, username, donations[i].item, donations[i].amount]);
+        // 1. Append row to continuous log stream using the precise creation timestamp
+        logSheet.appendRow([recordDate, username, donations[i].item, donations[i].amount]);
         
         // 2. Adjust or Add to live Inventory balances
         adjustInventoryBalance(invSheet, donations[i].item, donations[i].amount);

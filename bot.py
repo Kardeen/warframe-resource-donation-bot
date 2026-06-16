@@ -229,9 +229,12 @@ async def on_message(message):
                     return
 
                 # Send clean package to Google Sheets
+                # FIX: Add the "timestamp" parameter right here inside the dictionary payload layout
                 payload = {
+                    "action": "log",
                     "username": str(message.author.name),
-                    "donations": verified_donations
+                    "donations": verified_donations,
+                    "timestamp": message.created_at.isoformat()  # <-- ADDED
                 }
                 
                 try:
@@ -314,7 +317,8 @@ async def sync_missed_donations(ctx, limit: int = 100):
                     payload = {
                         "action": "log", 
                         "username": message.author.display_name,
-                        "donations": detected_items
+                        "donations": detected_items,
+                        "timestamp": message.created_at.isoformat() # FIX: Pass original time for history sync too!
                     }
 
                     try:
