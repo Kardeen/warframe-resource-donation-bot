@@ -80,42 +80,101 @@ function doGet(e) {
 
 function doPost(e) {
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    var payload = JSON.parse(e.postData.contents);
+    var jsonString = e.postData.contents;
+    var payload = JSON.parse(jsonString);
     
-    var username = payload.username || "Unknown Player";
-    var donations = payload.donations || []; // This is the verified array from Python
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var logSheet = ss.getSheetByName("Log") || ss.getSheets()[0]; // Fallback to first sheet
+    var invSheet = ss.getSheetByName("Inventory");
     
-    if (donations.length === 0) {
-      return ContentService.createTextOutput(JSON.stringify({
-        "status": "error",
-        "message": "No donations provided in payload structure"
-      })).setMimeType(ContentService.MimeType.JSON);
+    if (!invSheet) {
+      return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": "Inventory sheet tab not found!"})).setMimeType(ContentService.MimeType.JSON);
     }
+
+    var action = payload.action || "log"; // 'log', 'sync', or 'consume'
+    var donations = payload.donations;     // Array of {amount: X, item: "Y"}
+    var username = payload.username || "System";
     
     var timestamp = new Date();
-    
-    // Loop through the clean data and log each item as a row
-    for (var i = 0; i < donations.length; i++) {
-      var entry = donations[i];
-      sheet.appendRow([
-        timestamp,
-        username,
-        entry.item,   // Already whitelisted clean name
-        entry.amount  // Already validated integer amount
-      ]);
+
+    // ==========================================
+    // ACTION A: STANDARD DONATION LOGGING
+    // ==========================================
+    if (action === "log") {
+      for (var i = 0; i < donations.length; i++) {
+        // 1. Append row to continuous log stream
+        logSheet.appendRow([timestamp, username, donations[i].item, donations[i].amount]);
+        
+        // 2. Adjust or Add to live Inventory balances
+        adjustInventoryBalance(invSheet, donations[i].item, donations[i].amount);
+      }
+      return ContentService.createTextOutput(JSON.stringify({"status": "success", "message": "Donations logged and inventory increased successfully."})).setMimeType(ContentService.MimeType.JSON);
     }
     
-    return ContentService.createTextOutput(JSON.stringify({
-      "status": "success",
-      "message": donations.length + " rows added successfully."
-    })).setMimeType(ContentService.MimeType.JSON);
-    
+    // ==========================================
+    // ACTION B: ADMIN BASELINE INVENTORY SYNC
+    // ==========================================
+    if (action === "sync") {
+      for (var i = 0; i < donations.length; i++) {
+        setInventoryBalance(invSheet, donations[i].item, donations[i].amount);
+      }
+      return ContentService.createTextOutput(JSON.stringify({"status": "success", "message": "Inventory master baseline synced successfully."})).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // ==========================================
+    // ACTION C: VAULT MATERIAL CONSUMPTION
+    // ==========================================
+    if (action === "consume") {
+      for (var i = 0; i < donations.length; i++) {
+        // Subtract by sending a negative value to our adjuster helper
+        adjustInventoryBalance(invSheet, donations[i].item, -donations[i].amount);
+      }
+      return ContentService.createTextOutput(JSON.stringify({"status": "success", "message": "Inventory stock levels reduced successfully."})).setMimeType(ContentService.MimeType.JSON);
+    }
+
   } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      "status": "error",
-      "message": error.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": error.toString()})).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// --- HELPER SUB-METHODS FOR INVENTORY LOOKUPS ---
+
+function adjustInventoryBalance(sheet, itemName, amountToChange) {
+  var data = sheet.getDataRange().getValues();
+  var foundRow = -1;
+  
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0].toString().toLowerCase().trim() === itemName.toLowerCase().trim()) {
+      foundRow = i + 1; // Convert back to standard 1-based Row Index
+      break;
+    }
+  }
+  
+  if (foundRow !== -1) {
+    var currentVal = parseInt(sheet.getRange(foundRow, 2).getValue()) || 0;
+    var newVal = Math.max(0, currentVal + amountToChange); // Prevent negative stock levels
+    sheet.getRange(foundRow, 2).setValue(newVal);
+  } else if (amountToChange > 0) {
+    // If it's a brand new item not in the spreadsheet yet, append it!
+    sheet.appendRow([itemName, amountToChange]);
+  }
+}
+
+function setInventoryBalance(sheet, itemName, absoluteAmount) {
+  var data = sheet.getDataRange().getValues();
+  var foundRow = -1;
+  
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0].toString().toLowerCase().trim() === itemName.toLowerCase().trim()) {
+      foundRow = i + 1;
+      break;
+    }
+  }
+  
+  if (foundRow !== -1) {
+    sheet.getRange(foundRow, 2).setValue(absoluteAmount);
+  } else {
+    sheet.appendRow([itemName, absoluteAmount]);
   }
 }
 

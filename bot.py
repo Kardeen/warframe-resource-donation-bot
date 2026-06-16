@@ -394,5 +394,87 @@ async def resource_fields(ctx, *, search_term: str = None):
     except Exception as e:
         await status_msg.edit(content=f"❌ Network Error: {str(e)}")
 
+@bot.command(name="vaultsync")
+@commands.has_permissions(administrator=True)
+async def vault_sync(ctx):
+    """
+    Overwrites the 'Inventory' tab balances using a master snapshot image attachment or manual list.
+    """
+    if ctx.channel.id != ADMIN_KANAL_ID:
+        await ctx.send("⛔ This inventory command is restricted to the Admin Channel.")
+        return
+
+    if not ctx.message.attachments:
+        await ctx.send("⚠️ Please attach a snapshot image of your current Dojo Vault screen balance rows.")
+        return
+
+    status_msg = await ctx.send("🔄 Running OCR baseline evaluation scan on Vault screenshot...")
+    
+    try:
+        attachment = ctx.message.attachments[0]
+        image_bytes = await attachment.read()
+        
+        # Feed through your exact same high-precision state machine text parser!
+        ocr_results = reader.readtext(image_bytes, detail=0)
+        verified_balances = clean_and_validate_ocr(ocr_results)
+        
+        if not verified_balances:
+            await status_msg.edit(content="⚠️ No valid Warframe materials or amounts recognized in this vault image.")
+            return
+
+        # Package payload with the 'sync' action command
+        payload = {
+            "action": "sync",
+            "donations": verified_balances
+        }
+        
+        response = requests.post(WEBAPP_URL, json=payload)
+        if response.status_code == 200 and response.json().get("status") == "success":
+            lines = [f"▫️ **{d['item']}** set to balance: `{d['amount']}`" for d in verified_balances]
+            await status_msg.edit(content=f"✅ **Vault Inventory Sync Complete!**\n\n" + "\n".join(lines))
+        else:
+            await status_msg.edit(content="❌ Inventory sync update request failed at the Spreadsheet layer.")
+            
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Script error running baseline sync: {str(e)}")
+
+
+@bot.command(name="vaultconsume")
+@commands.has_permissions(administrator=True)
+async def vault_consume(ctx, *, message_content: str):
+    """
+    Deducts materials from the live Inventory sheet tab.
+    Syntax: !vaultconsume 5000 Salvage, 10 Oxium
+    """
+    if ctx.channel.id != ADMIN_KANAL_ID:
+        await ctx.send("⛔ This inventory command is restricted to the Admin Channel.")
+        return
+
+    status_msg = await ctx.send("🔄 Evaluating material consumption text parameters...")
+    
+    # Pass text through the clean_and_validate_ocr function to translate shorthand strings
+    parsed_lines = [message_content]
+    deductions = clean_and_validate_ocr(parsed_lines)
+    
+    if not deductions:
+        await status_msg.edit(content="⚠️ Could not process any matching resource deduction terms. Check item spelling syntax.")
+        return
+
+    # Package payload with the 'consume' action command
+    payload = {
+        "action": "consume",
+        "donations": deductions
+    }
+    
+    try:
+        response = requests.post(WEBAPP_URL, json=payload)
+        if response.status_code == 200 and response.json().get("status") == "success":
+            lines = [f"📉 Subtracted **{d['amount']}x** away from **{d['item']}** stock lines." for d in deductions]
+            await status_msg.edit(content=f"✅ **Vault Inventory Consumption Logged!**\n\n" + "\n".join(lines))
+        else:
+            await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Network transmission error: {str(e)}")
+
 # --- LAUNCH ---
 bot.run(TOKEN)
