@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import threading
+import re
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QCheckBox, QPushButton, QTabWidget, QTextEdit
@@ -11,7 +12,6 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QIcon, QAction
 import pystray
 from PIL import Image, ImageDraw
-import sys
 
 # --- LOAD/SAVE CONFIGURATION UTILITY ---
 CONFIG_FILE = "config.json"
@@ -30,6 +30,7 @@ def save_config(config_data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config_data, f, indent=4)
 
+# --- CUSTOM LOG STREAM INTERCEPTOR ---
 class CustomLogStream:
     def __init__(self, signal):
         self.signal = signal
@@ -44,6 +45,11 @@ class CustomLogStream:
 # --- THREAD WORKER TO RUN DISCORD ASYNCHRONOUSLY ---
 class DiscordBotThread(QThread):
     log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.loop = None
 
     def run(self):
         self.log_signal.emit("🤖 Loading configuration matrix...")
@@ -51,26 +57,35 @@ class DiscordBotThread(QThread):
         
         if not config["TOKEN"]:
             self.log_signal.emit("❌ Error: Missing Bot Token in config.json!")
+            self.finished_signal.emit()
             return
             
         try:
-            # 1. Intercept standard terminal printing streams
+            # Intercept standard terminal printing streams
             sys.stdout = CustomLogStream(self.log_signal)
             sys.stderr = CustomLogStream(self.log_signal)
             
-            # 2. Import the bot variable instance from your bot.py file
             from bot import bot
-            
             self.log_signal.emit("🛰️ Connecting core to Discord gateways...")
             
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(bot.start(config["TOKEN"]))
+            # Save a reference to the loop so our stop function can access it
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(bot.start(config["TOKEN"]))
         except Exception as e:
-            # Safely restore defaults if it crashes out
+            self.log_signal.emit(f"❌ Engine stopped or disconnected: {str(e)}")
+        finally:
+            # Restore standard print streams on exit
             sys.stdout = sys.__stdout__
             sys.stderr = sys.__stderr__
-            self.log_signal.emit(f"❌ Critical Engine Failure: {str(e)}")
+            self.finished_signal.emit()
+
+    def stop_gracefully(self):
+        if self.loop and self.loop.is_running():
+            from bot import bot
+            # Inject the close coroutine into the running background loop thread safely
+            asyncio.run_coroutine_threadsafe(bot.close(), self.loop)
+            self.log_signal.emit("🛑 Sent shutdown signal to Discord connection layers...")
 
 # --- MAIN WINDOW INTERFACE DESIGN ---
 class BotDashboard(QMainWindow):
@@ -82,7 +97,6 @@ class BotDashboard(QMainWindow):
         self.config = load_config()
         self.bot_thread = None
         
-        # Build layout elements
         self.init_ui()
         self.create_tray_icon()
         
@@ -90,22 +104,35 @@ class BotDashboard(QMainWindow):
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
         
-        # Tab 1: Dashboard Control & Console Logging Output
+        # ==========================================
+        # TAB 1: CORE CONTROL DASHBOARD
+        # ==========================================
         control_tab = QWidget()
         control_layout = QVBoxLayout()
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.append("💡 System Ready. Press 'Start Bot Engine' to initialize channel links.")
         
+        # Action Buttons side by side
+        btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("🚀 Start Bot Engine")
         self.start_btn.clicked.connect(self.start_bot)
         
+        self.stop_btn = QPushButton("🛑 Stop Bot Engine")
+        self.stop_btn.setEnabled(False) 
+        self.stop_btn.clicked.connect(self.stop_bot)
+        
+        btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.stop_btn)
+        
         control_layout.addWidget(QLabel("📰 **System Engine Status Logs:**"))
         control_layout.addWidget(self.log_output)
-        control_layout.addWidget(self.start_btn)
+        control_layout.addLayout(btn_layout)
         control_tab.setLayout(control_layout)
         
-        # Tab 2: Parameter Settings Manager
+        # ==========================================
+        # TAB 2: PARAMETER SETTINGS MANAGER
+        # ==========================================
         settings_tab = QWidget()
         settings_layout = QVBoxLayout()
         
@@ -132,7 +159,9 @@ class BotDashboard(QMainWindow):
         settings_layout.addWidget(save_btn)
         settings_tab.setLayout(settings_layout)
         
-        # Tab 3: Command Blueprint Quick Reference Guide Sheet
+        # ==========================================
+        # TAB 3: COMMAND REFERENCE GUIDE
+        # ==========================================
         guide_tab = QTextEdit()
         guide_tab.setReadOnly(True)
         guide_tab.setHtml("""
@@ -152,15 +181,29 @@ class BotDashboard(QMainWindow):
             </ul>
         """)
         
+        # Add all tabs cleanly to the central layout matrix
         tabs.addTab(control_tab, "🎮 Core Control Dashboard")
         tabs.addTab(settings_tab, "⚙️ Parameter Matrix Settings")
         tabs.addTab(guide_tab, "📖 Operational Commands Guide")
 
     def start_bot(self):
         self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        
         self.bot_thread = DiscordBotThread()
         self.bot_thread.log_signal.connect(self.update_console_log)
+        self.bot_thread.finished_signal.connect(self.on_bot_finished)
         self.bot_thread.start()
+
+    def stop_bot(self):
+        self.stop_btn.setEnabled(False)
+        if self.bot_thread:
+            self.bot_thread.stop_gracefully()
+
+    def on_bot_finished(self):
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.log_output.append("🏁 Bot engine thread fully closed. Safe to modify configurations or restart.")
 
     def update_console_log(self, text):
         self.log_output.append(text)
@@ -180,13 +223,11 @@ class BotDashboard(QMainWindow):
 
     # --- MINIMIZE TO SYSTEM TRAY FUNCTIONALITY ---
     def changeEvent(self, event):
-        # Catch window state minimize action changes
         if self.isMinimized():
-            self.hide() # Hides the window from the system taskbar completely
+            self.hide() 
             event.ignore()
 
     def create_tray_icon(self):
-        # Generate a simple decorative fallback icon image programmatically
         image = Image.new('RGB', (64, 64), color=(41, 128, 185))
         d = ImageDraw.Draw(image)
         d.text((20, 24), "🚀", fill=(255, 255, 255))
@@ -198,7 +239,7 @@ class BotDashboard(QMainWindow):
             elif str(item) == "Shutdown Framework":
                 icon.stop()
                 QApplication.quit()
-                os._exit(0) # Forces thorough background engine threads cleanup terminations
+                os._exit(0) 
 
         menu = pystray.Menu(
             pystray.MenuItem("Restore Dashboard Window", on_clicked),
@@ -206,8 +247,6 @@ class BotDashboard(QMainWindow):
         )
         
         self.tray_icon = pystray.Icon("vault_bot_tray", image, "Warframe Vault Controller", menu)
-        
-        # Start system tray daemon loop execution safely on a distinct separate threading channel
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
 if __name__ == "__main__":
