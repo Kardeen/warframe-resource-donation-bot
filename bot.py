@@ -112,7 +112,7 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
                             claimed_text_ranges.append((start, end))
                             print(f"[PASS 1 SHORTHAND] Found: '{official_item}' (via '{item_words[0]}') -> Amount: {closest_num.group()}")
 
-# =========================================================================
+    # =========================================================================
     # PASS 2: FUZZY FALLBACK (Case-Insensitive Typos & Multi-Word Items)
     # =========================================================================
     UI_WORD_BLACKLIST = ["dojo", "cancel", "ok", "refunded", "contribution", "contributions", "never", "sure"]
@@ -194,12 +194,11 @@ async def on_message(message):
             status_msg = None
 
             # --- PATH A: HANDLE TEXT MESSAGE CONTENT ---
-            # Remove the bot's mention tag (e.g., <@123456789>) so it doesn't mess up parsing
             clean_text = re.sub(r'<@!?\d+>', '', message.content).strip()
             
             if clean_text:
-                # Split the text message by commas, semicolons, or newlines 
-                # This lets users type: "10x Salvage, 500 Credits, 10x Cryotic"
+                # Note: If you want to use the streamlined stream parsing we built earlier,
+                # you can change this to just: raw_lines_to_process.append(clean_text)
                 text_lines = re.split(r'[,;\n]', clean_text)
                 raw_lines_to_process.extend([line.strip() for line in text_lines if line.strip()])
 
@@ -223,7 +222,6 @@ async def on_message(message):
                 if not status_msg:
                     status_msg = await message.channel.send("🔄 Processing your text entry...")
 
-                # Run the exact same validation engine!
                 verified_donations = clean_and_validate_ocr(raw_lines_to_process)
                 
                 if not verified_donations:
@@ -239,17 +237,104 @@ async def on_message(message):
                 try:
                     response = requests.post(WEBAPP_URL, json=payload)
                     if response.status_code == 200 and response.json().get("status") == "success":
+                        
+                        # FIX: Slap the checkmark onto the player's message instantly
+                        await message.add_reaction("✅")
+                        
                         details = "\n".join([f"▫️ {d['amount']}x {d['item']}" for d in verified_donations])
                         await status_msg.edit(content=f"✅ **Donation registered!**\n👤 Player: {message.author.name}\n{details}")
                     else:
+                        # Optional: slap a cross on it if Google breaks down
+                        await message.add_reaction("❌")
                         await status_msg.edit(content="❌ Data processing failed at Google Sheets layer.")
                 except Exception as e:
+                    await message.add_reaction("❌")
                     await status_msg.edit(content=f"❌ Network Error connecting to Google: {str(e)}")
 
     # Allow standard prefix commands (!clanstatus, !sync) to still process properly
     await bot.process_commands(message)
 
 # --- BOT COMMANDS ---
+
+@bot.command(name="sync")
+@commands.has_permissions(administrator=True)
+async def sync_missed_donations(ctx, limit: int = 100):
+    """
+    Admin Command: Executed in Admin Channel, but scans and processes 
+    unhandled bot pings directly from the public Donation Channel.
+    """
+    # 1. Enforce strict Admin Channel usage guard lock
+    if ctx.channel.id != ADMIN_KANAL_ID:
+        await ctx.send("⛔ This system synchronization command can only be executed inside the secure Admin Channel.")
+        return
+
+    # 2. Safely grab the public Donation Channel object from Discord's cache
+    donation_channel = bot.get_channel(SPENDEN_KANAL_ID)
+    if not donation_channel:
+        await ctx.send("❌ Error: Could not locate the target Donation Channel. Verify SPENDEN_KANAL_ID configuration.")
+        return
+
+    status_msg = await ctx.send(f"🔄 Interrogating timeline history inside <#{SPENDEN_KANAL_ID}> for missed player pings...")
+
+    processed_count = 0
+    logged_lines_count = 0
+
+    # 3. Read history backward specifically from the donation tracking channel
+    async for message in donation_channel.history(limit=limit):
+        # Skip bot responses completely
+        if message.author.bot:
+            continue
+
+        # RULE: Check if this bot was explicitly tagged in the donation channel
+        if bot.user in message.mentions:
+            # Duplicate Guard: skip if it already sports our confirmation green checkmark
+            has_check = any(r.emoji == "✅" for r in message.reactions)
+            if has_check:
+                continue 
+
+            raw_lines = []
+            if message.content:
+                raw_lines.append(message.content)
+
+            if message.attachments:
+                for attachment in message.attachments:
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
+                        try:
+                            img_bytes = await attachment.read()
+                            ocr_text = reader.readtext(img_bytes, detail=0)
+                            raw_lines.extend(ocr_text)
+                        except Exception as e:
+                            print(f"[CROSS-SYNC OCR FAILED] Message ID {message.id}: {e}")
+
+            if raw_lines:
+                # Run the text stream through your case-insensitive hybrid engine
+                detected_items = clean_and_validate_ocr(raw_lines)
+
+                if detected_items:
+                    payload = {
+                        "action": "log", 
+                        "username": message.author.display_name,
+                        "donations": detected_items
+                    }
+
+                    try:
+                        response = requests.post(WEBAPP_URL, json=payload)
+                        if response.status_code == 200 and response.json().get("status") == "success":
+                            # Add the checkmark directly onto the user's message in the donation channel!
+                            await message.add_reaction("✅")
+                            processed_count += 1
+                            logged_lines_count += len(detected_items)
+                        else:
+                            await message.add_reaction("❌")
+                    except Exception as err:
+                        print(f"[CROSS-SYNC POST ERROR] {err}")
+                        break
+
+    # 4. Return the summary analysis back to the Admin Channel
+    if processed_count > 0:
+        await status_msg.edit(content=f"✅ **Cross-Channel Sync Complete!**\nScanned <#{SPENDEN_KANAL_ID}>: Processed **{processed_count}** missed pings and updated **{logged_lines_count}** inventory entries.")
+    else:
+        await status_msg.edit(content=f"🔍 Timeline check inside <#{SPENDEN_KANAL_ID}> complete. No unprocessed pings discovered within the last {limit} messages.")
 
 @bot.command(name="clanstatus")
 @commands.has_permissions(administrator=True)
