@@ -333,7 +333,7 @@ async def sync_missed_donations(ctx, limit: int = 100):
                 if detected_items:
                     payload = {
                         "action": "log", 
-                        "username": message.author.display_name,
+                        "username": str(message.author.name),
                         "donations": detected_items,
                         "timestamp": message.created_at.isoformat() # FIX: Pass original time for history sync too!
                     }

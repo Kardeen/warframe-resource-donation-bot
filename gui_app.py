@@ -14,6 +14,13 @@ import pystray
 from PIL import Image, ImageDraw
 import subprocess
 
+# 🔥 FIX: Safely force standard streams to use UTF-8 if they exist on Windows
+if sys.platform == "win32":
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8")
+    if sys.stderr is not None:
+        sys.stderr.reconfigure(encoding="utf-8")
+
 # --- LOAD/SAVE CONFIGURATION UTILITY ---
 
 CONFIG_FILE = "config.json"
@@ -68,29 +75,46 @@ def load_config():
     if os.path.exists(WIKI_SCRAPER_SCRIPT):
         print(f"🌐 [STARTUP] Attempting live update via {WIKI_SCRAPER_SCRIPT}...")
         try:
-            # 1. Grab a copy of the current system environment variables
-            current_env = os.environ.copy()
-            # 2. Force Python's I/O stream encoding to use UTF-8 inside the child process
-            current_env["PYTHONIOENCODING"] = "utf-8"
+            # 🔄 CHECK STATE: Are we running inside a frozen PyInstaller .exe?
+            if getattr(sys, 'frozen', False):
+                print("📦 [STARTUP] Running in compiled mode. Executing embedded scraper natively...")
+                import importlib.util
+                
+                # Dynamically load the embedded extract_wiki.py file
+                spec = importlib.util.spec_from_file_location("extract_wiki", WIKI_SCRAPER_SCRIPT)
+                wiki_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(wiki_module)
+                
+                # Call the main extraction function inside your extract_wiki.py
+                if hasattr(wiki_module, 'extract_resources'):
+                    wiki_module.extract_resources()
+                else:
+                    # Fallback if the code isn't wrapped in a function, executing it on import might have already run it
+                    pass
+                
+                update_successful = True
+            else:
+                # 💻 DEVELOPMENT MODE: Run via subprocess normally
+                current_env = os.environ.copy()
+                current_env["PYTHONIOENCODING"] = "utf-8"
+                
+                result = subprocess.run(
+                    [sys.executable, WIKI_SCRAPER_SCRIPT], 
+                    capture_output=True, 
+                    text=True, 
+                    check=True,
+                    encoding="utf-8",
+                    env=current_env
+                )
+                update_successful = True
             
-            # FIX: We remove capture_output and set check=True so it streams its traceback
-            # or grab the stderr block explicitly to print it cleanly.
-            result = subprocess.run(
-                [sys.executable, WIKI_SCRAPER_SCRIPT], 
-                capture_output=True, 
-                text=True, 
-                check=True,
-                encoding="utf-8",
-                env=current_env
-            )
-            
-            # Verify the file was successfully written/updated
+            # Verify the file was successfully written/updated regardless of the method above
             if os.path.exists(DEFAULT_RESOURCES_FILE) and os.path.getsize(DEFAULT_RESOURCES_FILE) > 0:
                 print("✅ [STARTUP] Whitelist successfully updated from the Warframe Wiki.")
                 update_successful = True
+                
         except subprocess.CalledProcessError as cmd_err:
             print(f"⚠️ [STARTUP] Live update failed (Wiki changed or offline):")
-            # This line will print the exact internal script error stack to your console window:
             print(f"--- INTERNAL SCRAPER ERROR STACK --- \n{cmd_err.stderr}------------------------------------")
         except Exception as e:
             print(f"⚠️ [STARTUP] System error executing scraper script: {e}")

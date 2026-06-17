@@ -15,6 +15,8 @@ A standalone desktop control interface panel built with Python, PyQt6, and `pyst
 | `config.json` | JSON Storage Model | **The Source of Truth.** Created dynamically on first boot. Contains runtime connection endpoints, tokens, and channel ID parameters. |
 | `warframe_resources.txt` | Flat Text Database | **The Local Whitelist.** A line-separated list of items used by the bot's internal Levenshtein distance fuzzy-matching algorithm to cleanly scrub typos out of text streams. |
 
+> 🛡️ **Identity Tracking Standardization:** To prevent fragmented ledger accounts caused by members changing their Discord display nicknames or global aesthetic profiles, the framework strictly logs transactions using the unique, permanent system account handle (`message.author.name`). All matching lookups, history loops, and `!clanstatus` parameters utilize this lowercase system unique-key to maintain data integrity.
+
 ---
 
 ## 🎮 2. Functional Bot Capabilities & Examples
