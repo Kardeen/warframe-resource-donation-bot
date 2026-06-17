@@ -30,7 +30,7 @@ ADMIN_KANAL_ID = config["ADMIN_KANAL_ID"]
 SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
 NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
 
-RESOURCES_FILE = config["RESOURCES_FILE"]
+RESOURCES_FILE = config.get("RESOURCES_FILE", "warframe_resources.txt")
 RESOURCE_WHITELIST = []
 
 # Inside your functions, whenever you read channels dynamically or want runtime updates, 

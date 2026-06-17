@@ -12,19 +12,114 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QIcon, QAction
 import pystray
 from PIL import Image, ImageDraw
+import subprocess
 
 # --- LOAD/SAVE CONFIGURATION UTILITY ---
+
 CONFIG_FILE = "config.json"
+DEFAULT_RESOURCES_FILE = "warframe_resources.txt"
+WIKI_SCRAPER_SCRIPT = "extract_wiki.py"
+
+# Absolute safety net list if the wiki script cannot run and no file exists
+HARDCODED_RESOURCE_FALLBACK = [
+    "35mm Film", 
+    "Adramal Alloy", "Advances Debt-Bond", "Aggristone", "Agnovidisc", "Alloy Plate", "Animo Nav Beacon", "Anomaly Shard", "Argon Burger Meal", "Argon Crystal", "Ascaris Prime", "Asterite", "Atmo Systems", "Atramentum", "Ayatan Amber Star", "Ayatan Cyan Star",     "Beating Heartstrings", "Bellow Voca", "Belric Crystal Fragment", "Big Bytes Pizza", "Bile", 
+    "Bioplasma", "Biotic Filter", "Biotics", "Blister Stalk", "Blueprint", "Borica", "Bountiful Seed", "Breath Of The Eidolon", "Brilliant Eidolon Shard", 
+    "Calda Toroid", "Calx", "Cetus Wisp", "Cheddar Crowns Cereal", "Chitinous Husk", "Chroma Mark", "Chroma Signal", "Chromatic Atramentum", "Chuggin' Along Sixpack", "Circuits", "Condroc Wing", "Connla Sprout", "Control Module", "Corrupted Holokey", "Cortichrome", "Cosmic Specter Regiment", "Credits", "Crisma Toroid", "Cryotic", 
+    "Damaged Necramech Casing", "Damaged Necramech Engine", "Damaged Necramech Pod", "Damaged Necramech Weapon Barrel", "Damaged Necramech Weapon Pod", "Damaged Necramech Weapon Receiver", "Damaged Necramech Weapon Stock", "Datum", "Daughter Token", "Defender Insignia", "Devil's Cap", "Dominus Aureus", "Dracroot", "Dull Button", 
+    "Echo Voca", "Eevani", "Efervon Sample", "Eidolon Lens", "Eidolon Madurai Lens", "Eidolon Naramon Lens", "Eidolon Shard", "Eidolon Unairu Lens", "Eidolon Vazarin Lens", "Eidolon Zenurik Lens", "Enigma Gyrum", "Entrati Lanthorn", "Entrati Obols", "Entratifragmentbase", "Exalted Mark", "Executive Quittance", "Exemplar Granum Crown", "Experimental Arc-Relay", 
+    "Familial Debt-Bond", "Fass Residue", "Fate Pearl", "Father Token", "Fergolyte", "Ferrite", "Ferrofungus", "Flawless Seed", "Flawless Sentient Core", "Focus Lens", "Force Specter Regiment", "Forma", "Frostcap", 
+    "Gallium", "Gamma Berry", "Ganglion", "General Insignia", "Generic Dojo Color Pigment", "Genius Datum", "Gorgaricus Spore", "Grandmother Token", "Granum Crown", "Greater Focus Lens", "Greater Madurai Lens", "Greater Naramon Lens", "Greater Unairu Lens", "Greater Vazarin Lens", "Greater Zenurik Lens", "Grokdrul", "Gyromag Systems", 
+    "Hexenon", "Honored Mark", "Höllvanian Pitchweave Fragment", 
+    "Ignia", "Incubator Power Core", "Infected Palpators", "Insignia", "Intact Sentient Core", "Intriguing Datum", "Iradite", "Ironwood", 
+    "Javlok Capacitor", "Judgement Points", 
+    "Kavat Genetic Code", "Kovnik", "Kuaka Spinal Claw", "Kullervo's Bane", "Kuva", 
+    "Lamentus", "Laudavi", "Lawful Medallion", "Lazulite Toroid", "Lich Token", "Live Heartcell", "Lua Lens", "Lua Madurai Lens", "Lua Naramon Lens", "Lua Thrax Plasm", "Lua Unairu Lens", "Lua Vazarin Lens", "Lua Zenurik Lens", "Lucent Teroglobe", "Lyroic Bridge", 
+    "Madurai Lens", "Mandachord", "Mandachord Body", "Mandachord Bridge", "Mandachord Fret", "Maphica", "Maprico", "Mark", "Maxim Medallion", "Medallion", "Medical Debt-Bond", "Mood Crystal", "Morphics", "Mother Token", "Muck Bonnet", "Mutalist Alad V Nav Coordinate", "Mytocardia Spore", 
+    "Nano Spores", "Naramon Lens", "Narmer Isoplast", "Nav Coordinate", "Necracoil", "Neural Sensors", "Neurodes", "Nistlepod", "Nitain Extract", "Nonono", "Nullstones", 
+    "On-lyne CD", "Orokin Animus Matrix", "Orokin Ballistics Matrix", "Orokin Cell", "Orokin Cipher", "Orokin Monitor", "Orokin Orientation Matrix", "Otak Token", "Oxides", "Oxium", 
+    "Partner Quittance", "Pathos Clamp", "Phase Specter Regiment", "Pheromones", "Plastids", "Polymer Bundle", "Proof Fragment", "Pulsating Tubercles", "Pustulite", 
+    "Quittance", 
+    "Radiant Eidolon Shard", "Rania Crystal Fragment", "Reeking Puffball", "Ren Hypercore", "Repeller Systems", "Riven Sliver", "Riven Transmuter", "Rubedo", "Rune Marrow", 
+    "Saggen Pearl", "Salvage", "Scintillant", "Scorched Beacon", "Scuttler Husk", "Seed", "Seriglass Shard", "Servoris", "Severed Bile Sac", "Shelter Debt-Bond", "Shrill Voca", "Silphsela", "Sister Of Parvos Token", "Sisters of Parvos Token", "Sola Toroid", "Somatic Fibers", "Son Token", "Spectral Debris", "Spring Popper", "Steel Essence", "Stela", "Synthetic Eidolon Shard", "Synthetics", "Synthula", 
+    "Tasoma Extract", "Techrot Chitin", "Techrot Motherboard", "Tellurium", "Temporal Dust", "Tepa Nodule", "The Countessa Comic", "Thermal Sludge", "Thorn Tooth", "Thrax Plasm", "Thunder-Button", "Ticor Plate", "Titanium", "Training Debt-Bond", 
+    "Ueymag", "Unairu Lens", "Universal Medallion", 
+    "Vainthorn", "Vapor Specter Regiment", "Vazarin Lens", "Vega Toroid", "Vessel Capillaries", "Vestigial Motes", "Violet's Bane", "Vitus Essence", "Void Traces", "Voidgel Orb", "Voidplume Crest", "Voidplume Down", "Voidplume Pinion", "Voidplume Quill", "Voidplume Vane", "Vome Residue", "Vomval Trumpet", "Vosfor", 
+    "Winter Spear", 
+    "Yao Shrub", 
+    "Zenith Granum Crown", "Zenurik Lens"
+]
 
 def load_config():
+    """
+    Loads config.json. Updates warframe_resources.txt on every startup.
+    Falls back to existing data or hardcoded defaults if the script fails.
+    """
+    # 1. ALWAYS TRY TO UPDATE THE WHITELIST ON STARTUP
+    update_successful = False
+    
+    if os.path.exists(WIKI_SCRAPER_SCRIPT):
+        print(f"🌐 [STARTUP] Attempting live update via {WIKI_SCRAPER_SCRIPT}...")
+        try:
+            # 1. Grab a copy of the current system environment variables
+            current_env = os.environ.copy()
+            # 2. Force Python's I/O stream encoding to use UTF-8 inside the child process
+            current_env["PYTHONIOENCODING"] = "utf-8"
+            
+            # FIX: We remove capture_output and set check=True so it streams its traceback
+            # or grab the stderr block explicitly to print it cleanly.
+            result = subprocess.run(
+                [sys.executable, WIKI_SCRAPER_SCRIPT], 
+                capture_output=True, 
+                text=True, 
+                check=True,
+                encoding="utf-8",
+                env=current_env
+            )
+            
+            # Verify the file was successfully written/updated
+            if os.path.exists(DEFAULT_RESOURCES_FILE) and os.path.getsize(DEFAULT_RESOURCES_FILE) > 0:
+                print("✅ [STARTUP] Whitelist successfully updated from the Warframe Wiki.")
+                update_successful = True
+        except subprocess.CalledProcessError as cmd_err:
+            print(f"⚠️ [STARTUP] Live update failed (Wiki changed or offline):")
+            # This line will print the exact internal script error stack to your console window:
+            print(f"--- INTERNAL SCRAPER ERROR STACK --- \n{cmd_err.stderr}------------------------------------")
+        except Exception as e:
+            print(f"⚠️ [STARTUP] System error executing scraper script: {e}")
+    else:
+        print(f"ℹ️ [STARTUP] {WIKI_SCRAPER_SCRIPT} not found. Skipping live update loop.")
+
+    # 2. EMERGENCY DRILL: If update failed, make sure we at least have a backup file
+    if not update_successful:
+        if os.path.exists(DEFAULT_RESOURCES_FILE):
+            print(f"📦 [STARTUP] Update failed, but an existing copy of '{DEFAULT_RESOURCES_FILE}' was found. Carrying over old data matrix.")
+        else:
+            print(f"🚨 [STARTUP] Update failed AND no file exists! Deploying hardcoded fallback configurations...")
+            try:
+                with open(DEFAULT_RESOURCES_FILE, "w", encoding="utf-8") as rf:
+                    rf.write("\n".join(HARDCODED_RESOURCE_FALLBACK) + "\n")
+                print("✅ [STARTUP] Emergency default whitelist deployed successfully.")
+            except Exception as write_err:
+                print(f"❌ [CRITICAL] Failed to write emergency backup definitions to disk: {write_err}")
+
+    # 3. SELF-HEAL LAYER: Ensure Configuration JSON Exists
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
-    return {
-        "TOKEN": "", "WEBAPP_URL": "", 
-        "ADMIN_KANAL_ID": 0, "SPENDEN_KANAL_ID": 0, 
-        "NUR_IM_SPENDENKANAL": True, "RESOURCES_FILE": "warframe_resources.txt"
+            
+    default_blueprint = {
+        "TOKEN": "", 
+        "WEBAPP_URL": "", 
+        "ADMIN_KANAL_ID": 0, 
+        "SPENDEN_KANAL_ID": 0, 
+        "NUR_IM_SPENDENKANAL": True, 
+        "RESOURCES_FILE": DEFAULT_RESOURCES_FILE
     }
+    
+    save_config(default_blueprint)
+    print(f"⚙️ [INITIALIZATION] Created clean template configuration file matrix at '{CONFIG_FILE}'.")
+    return default_blueprint
 
 def save_config(config_data):
     with open(CONFIG_FILE, "w") as f:
