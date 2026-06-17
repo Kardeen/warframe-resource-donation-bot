@@ -45,6 +45,7 @@ Corrupted Holokey
 Cortichrome
 Cosmic Specter Regiment
 Credits
+Crimson Talents
 Crisma Toroid
 Cryotic
 Damaged Necramech Casing
@@ -71,6 +72,7 @@ Eidolon Shard
 Eidolon Unairu Lens
 Eidolon Vazarin Lens
 Eidolon Zenurik Lens
+Emerald Talents
 Enigma Gyrum
 Entrati Lanthorn
 Entrati Obols
