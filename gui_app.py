@@ -18,7 +18,14 @@ import subprocess
 
 CONFIG_FILE = "config.json"
 DEFAULT_RESOURCES_FILE = "warframe_resources.txt"
-WIKI_SCRAPER_SCRIPT = "extract_wiki.py"
+
+# 🔄 Dynamic path calculation for PyInstaller embedded assets
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # Running inside the compiled PyInstaller .exe bundle environment
+    WIKI_SCRAPER_SCRIPT = os.path.join(sys._MEIPASS, "extract_wiki.py")
+else:
+    # Running locally inside your normal code editor / poetry development environment
+    WIKI_SCRAPER_SCRIPT = "extract_wiki.py"
 
 # Absolute safety net list if the wiki script cannot run and no file exists
 HARDCODED_RESOURCE_FALLBACK = [

@@ -1,2 +1,17 @@
+# --- Python Architecture ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+poetry.lock
+
+# --- PyInstaller Build Artifacts ---
+build/
+dist/
+*.spec
+
+# --- Local Vault Runtime Disks (Secrets & Whitelists) ---
 .env
 config.json
+warframe_resources.txt
