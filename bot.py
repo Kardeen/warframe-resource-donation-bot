@@ -241,11 +241,18 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user:
+    # 1. Ignore bot's own loops
+    if message.author.bot:
         return
     
     # 🔄 Refresh all global variables right before processing anything
     sync_global_config()
+
+    # 2. 🔥 FIX: Let Discord process administrative commands (!correct, !clanstatus) first!
+    # If the message starts with your prefix, process it and exit this event loop immediately.
+    if message.content.startswith("!"):
+        await bot.process_commands(message)
+        return
 
     # Check if the bot is allowed to process messages in this channel
     if not NUR_IM_SPENDENKANAL or message.channel.id == SPENDEN_KANAL_ID:
@@ -659,6 +666,109 @@ async def vault_consume(ctx, *, message_content: str):
             await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Network transmission error: {str(e)}")
+
+@bot.command(name="correct")
+@commands.has_permissions(administrator=True)
+async def correct_donation(ctx, *, correction_string: str):
+    """
+    Corrects a previously logged donation by replying directly to the bot's status message.
+    Supports fuzzy matching for resource names.
+    Syntax: !correct Resource Name=ActualAmount
+    """
+    # 1. Verify the admin is replying to a message
+    if not ctx.message.reference or not ctx.message.reference.message_id:
+        await ctx.send("❌ **Error:** You must use this command by **replying** directly to the bot message you want to correct.")
+        return
+
+    try:
+        # Fetch the original bot message
+        original_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+        
+        # 2. Parse original player name from template line: "👤 Player: username"
+        player_match = re.search(r"👤 Player:\s*(\S+)", original_msg.content)
+        if not player_match:
+            await ctx.send("❌ **Error:** Could not extract the original player account from that message layout.")
+            return
+        
+        target_player = player_match.group(1)
+
+        # 3. Parse the input string (split on the last '=')
+        if "=" not in correction_string:
+            await ctx.send("❌ **Syntax Error:** Use `Resource Name=Amount`. Example: `!correct Polymer Bundle=50000`")
+            return
+            
+        input_resource, new_amount_str = correction_string.rsplit("=", 1)
+        input_resource = input_resource.strip()
+        
+        try:
+            new_amount = int(re.sub(r'\D', '', new_amount_str))
+        except ValueError:
+            await ctx.send("❌ **Error:** Invalid amount provided.")
+            return
+
+        # =========================================================================
+        # 🧠 FUZZY RESOURCE RESOLUTION ENGINE
+        # =========================================================================
+        best_match = None
+        best_score = 0
+        
+        # Access your existing validation whitelist (assumed sorted or unsorted here)
+        for official_item in RESOURCE_WHITELIST:
+            score = fuzz.partial_ratio(input_resource.lower(), official_item.lower())
+            if score > best_score:
+                best_score = score
+                best_match = official_item
+
+        # Set a reasonable admin shorthand threshold (e.g., 70%)
+        if best_match and best_score >= 70:
+            resolved_resource = best_match
+            print(f"[CORRECTION FUZZY] Resolved '{input_resource}' ➔ '{resolved_resource}' ({best_score:.1f}%)")
+        else:
+            await ctx.send(f"❌ **Error:** Could not reliably identify the resource '{input_resource}'. Please check your spelling.")
+            return
+        # =========================================================================
+
+        # =========================================================================
+        # 🔍 EXTRACT OLD VALUE FROM REPLIED MESSAGE
+        # =========================================================================
+        # Look for the line matching the resource inside the bot's original message
+        # Example line format: "▫️ 5000x Polymer Bundle"
+        old_amount = None
+        escaped_resource = re.escape(resolved_resource)
+        old_val_match = re.search(r"▫️\s*(\d+)x\s+" + escaped_resource, original_msg.content, re.IGNORECASE)
+        
+        if old_val_match:
+            old_amount = int(old_val_match.group(1))
+            print(f"[CORRECTION DB LINK] Target row signature: {target_player} | {resolved_resource} | Old: {old_amount}")
+        else:
+            await ctx.send(f"❌ **Error:** Could not find an original entry for **{resolved_resource}** inside that specific bot message.")
+            return
+
+        # 4. Fire the payload to your Google Apps Script Webapp
+        payload = {
+            "action": "CORRECTION",
+            "player": target_player,
+            "resource": resolved_resource,
+            "old_amount": old_amount,       # Used to target the row
+            "new_amount": new_amount        # The value we replace it with
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(WEBAPP_URL, json=payload, timeout=15, allow_redirects=True) as resp:
+                if resp.status == 200:
+                    res_data = await resp.json()
+                    if res_data.get("status") == "success":
+                        await ctx.message.add_reaction("🛠️")
+                        await ctx.send(f"✅ **Correction Applied!** Adjusted **{resolved_resource}** to **{new_amount:,}** for player `@{target_player}` in the database master ledger.")
+                    else:
+                        await ctx.send("❌ Google Sheets rejected the structural correction payload adjustment layout.")
+                else:
+                    await ctx.send(f"❌ Network connection error. Code: {resp.status}")
+
+    except discord.NotFound:
+        await ctx.send("❌ **Error:** Could not find the original message asset thread target.")
+    except Exception as e:
+        await ctx.send(f"❌ **System Error processing amendment logic:** {str(e)}")
 
 # --- LAUNCH ---
 if __name__ == "__main__":
