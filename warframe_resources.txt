@@ -45,7 +45,7 @@ Corrupted Holokey
 Cortichrome
 Cosmic Specter Regiment
 Credits
-Crimson Talents
+Crimson Talent
 Crisma Toroid
 Cryotic
 Damaged Necramech Casing
@@ -72,7 +72,7 @@ Eidolon Shard
 Eidolon Unairu Lens
 Eidolon Vazarin Lens
 Eidolon Zenurik Lens
-Emerald Talents
+Emerald Talent
 Enigma Gyrum
 Entrati Lanthorn
 Entrati Obols
@@ -173,6 +173,7 @@ Nitain Extract
 Nonono
 Nullstones
 On-lyne CD
+Orion's Swaddle Syandana
 Orokin Animus Matrix
 Orokin Ballistics Matrix
 Orokin Cell
@@ -213,6 +214,7 @@ Severed Bile Sac
 Shelter Debt-Bond
 Shrill Voca
 Silphsela
+Sirius' Swaddle Syandana
 Sister Of Parvos Token
 Sisters of Parvos Token
 Sola Toroid
