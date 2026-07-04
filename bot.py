@@ -329,7 +329,7 @@ async def on_message(message):
                         async with session.post(
                             WEBAPP_URL, 
                             json=payload, 
-                            timeout=15,
+                            timeout=60,
                             allow_redirects=True  # 🔥 CRITICAL FIX: Tells aiohttp to follow Google's 302 redirect smoothly
                         ) as resp:
                             
@@ -578,7 +578,7 @@ async def resource_fields(ctx, *, search_term: str = None):
     # Option B: No parameter -> Use your NEW action=list code to see what's currently in the sheet!
     status_msg = await ctx.send("📡 Fetching active logged resources from Google Sheets...")
     try:
-        response = requests.get(f"{WEBAPP_URL}?action=list", timeout=15)
+        response = requests.get(f"{WEBAPP_URL}?action=list", timeout=60)
         if response.status_code == 200:
             res_data = response.json()
             
@@ -766,7 +766,7 @@ async def correct_donation(ctx, *, correction_string: str):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(WEBAPP_URL, json=payload, timeout=15, allow_redirects=True) as resp:
+            async with session.post(WEBAPP_URL, json=payload, timeout=60, allow_redirects=True) as resp:
                 if resp.status == 200:
                     res_data = await resp.json()
                     if res_data.get("status") == "success":
