@@ -871,7 +871,7 @@ async def automated_weekly_leaderboard():
     Triggers automatically. Checks if today is Monday, and posts the Weekly Summary.
     Uses the non-blocking async Google Sheets data engine.
     """
-    now = datetime.utcnow()
+    now = datetime.now(datetime.timezone.utc)
     # 0 = Monday, 1 = Tuesday ... 6 = Sunday
     if now.weekday() != 0: 
         return # Skip execution if it's not Monday
