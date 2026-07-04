@@ -21,7 +21,7 @@ jobs:
       - name: Install and configure Poetry
         uses: snok/install-poetry@v1
         with:
-          version: 1.8.2 # Pins a stable release version matrix entry
+          version: 2.0.1
           virtualenvs-create: true
           virtualenvs-in-project: true
 
