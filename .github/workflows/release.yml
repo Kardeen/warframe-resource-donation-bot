@@ -3,11 +3,14 @@ name: Compile Executable and Publish Release
 on:
   push:
     tags:
-      - 'v*' # Triggers automatically when you push a tag starting with 'v' (e.g., v0.2.0)
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build-and-release:
-    runs-on: windows-latest # PyInstaller must run on Windows to generate a Windows .exe
+    runs-on: windows-latest
 
     steps:
       - name: Checkout Repository
@@ -25,19 +28,21 @@ jobs:
           virtualenvs-create: true
           virtualenvs-in-project: true
 
-      - name: Add Poetry to Path
-        run: echo "$Home\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf-8 -Append
+      - name: Install Core Dependencies
+        run: |
+          & "$HOME\.local\bin\poetry" install --no-interaction --no-root
 
-      - name: Install Dependencies
-        run: poetry install --no-interaction
+      - name: Inject PyInstaller compiler
+        run: |
+          & "$HOME\.local\bin\poetry" add pyinstaller
 
       - name: Compile Standalone Executable
         run: |
-          poetry run pyinstaller --noconsole --onefile --add-data "extract_wiki.py;." gui_app.py
+          & "$HOME\.local\bin\poetry" run pyinstaller --noconsole --onefile --name "ClanVaultManager" --add-data "extract_wiki.py;." gui_app.py
 
       - name: Create GitHub Release and Upload Artifact
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/gui_app.exe
+          files: dist/ClanVaultManager.exe
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Provided automatically by GitHub Actions
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
