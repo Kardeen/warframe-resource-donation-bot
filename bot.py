@@ -786,7 +786,7 @@ async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str
         return
 
     # 1. Map timeframes to exact start-date strings
-    today = datetime.utcnow()
+    today = datetime.now(datetime.timezone.utc)
     start_date = None
     if timeframe == "week":
         start_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
