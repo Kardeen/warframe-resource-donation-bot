@@ -2,6 +2,7 @@
 name = "discordbot"
 version = "0.1.0"
 description = ""
+package-mode = false
 authors = [
     {name = "Kardeen",email = "Hans.Lindner5@gmail.com"}
 ]
