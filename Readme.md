@@ -119,6 +119,42 @@ An administrative utility used to query the active memory layout of your validat
 
 * **System Design Value**: This eliminates the need to open up the host machine's desktop interface panel or check `warframe_resources.txt` manually to confirm if a newly patched update asset has been successfully added to your bot's parsing dictionary matrix.
 
+### F. Clan Leaderboard Rankings (`!leaderboard`)
+Compiles a transactional tracking leaderboard matrix displaying our top farming asset gatherers.
+
+| Target Layout | Command Syntax | Description |
+| :--- | :--- | :--- |
+| **Weekly Summary** | `!leaderboard week` | Compiles a leaderboard tracking overall items over the last 7 trailing days. |
+| **Monthly Summary** | `!leaderboard month` | Evaluates gross resource contributions across the last 30 trailing days. |
+| **Target Resource** | `!leaderboard month resource=Oxium` | Targets a specific resource breakdown over the selected period. |
+| **All-Time Fame** | `!leaderboard all` | Displays the eternal top-tier contributors logged across the entire ledger history. |
+
+> 🕒 **Automated Posting:** The architecture contains a background cron loop handler that generates and posts a pristine Weekly Gross Summary embed inside the monitoring feed automatically every Monday morning at UTC 00:00.
+
+### G. Configuration Parameters Reference (`config.json`)
+
+The application's structural state is driven entirely by a local `config.json` matrix file initialized on first boot. These values can be managed natively via **TAB 2 (Parameter Matrix Settings)** within the graphical user interface.
+
+| Key | Data Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `TOKEN` | `String` | `""` | The unique Discord Application Bot Token used to register the script onto the gateway websockets. |
+| `WEBAPP_URL` | `String` | `""` | The compiled deployment endpoint URL for your Google Apps Script macro handler (`Code.gs`). |
+| `ADMIN_KANAL_ID` | `Integer` | `0` | The secure channel ID where executive commands (`!sync`, `!clanstatus`, `!leaderboard`, `!correct`) are exclusively permitted. |
+| `SPENDEN_KANAL_ID` | `Integer` | `0` | The public stream text channel where the bot listens for user donations and processes game UI image snapshots. |
+| `AUTO_LEADERBOARD_CHANNEL_ID` | `Integer` | `0` | **[NEW]** The explicit target channel ID where the background task engine automatically posts the competitive weekly summary embed every Monday. |
+| `NUR_IM_SPENDENKANAL` | `Boolean` | `true` | If toggled to `true`, limits text scanning and image execution to the designated public tracking channel box to prevent global text pollution. |
+
+#### Schema Structure Example Blueprint
+```json
+{
+    "TOKEN": "MTIzeW91cmJvdHRva2VuaGVyZS40NTZzYW1wbGU3ODk...",
+    "WEBAPP_URL": "[https://script.google.com/macros/s/AKfycbz..._exec/exec](https://script.google.com/macros/s/AKfycbz..._exec/exec)",
+    "ADMIN_KANAL_ID": 123456789012345678,
+    "SPENDEN_KANAL_ID": 876543210987654321,
+    "AUTO_LEADERBOARD_CHANNEL_ID": 112233445566778899,
+    "NUR_IM_SPENDENKANAL": true,
+    "RESOURCES_FILE": "warframe_resources.txt"
+}
 
 ---
 

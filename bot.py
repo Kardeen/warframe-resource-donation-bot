@@ -8,6 +8,8 @@ from rapidfuzz import process, fuzz
 import json
 import aiohttp
 import asyncio
+from datetime import datetime, timedelta
+from discord.ext import tasks
 
 def sync_global_config():
     """Reads config.json and forces the global variables to update to the latest GUI values."""
@@ -31,6 +33,8 @@ WEBAPP_URL = config["WEBAPP_URL"]
 ADMIN_KANAL_ID = config["ADMIN_KANAL_ID"]
 SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
 NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
+# Define your automated channel loop destination
+AUTO_LEADERBOARD_CHANNEL_ID = config["AUTO_LEADERBOARD_CHANNEL_ID"]
 
 RESOURCES_FILE = config.get("RESOURCES_FILE", "warframe_resources.txt")
 RESOURCE_WHITELIST = []
@@ -238,6 +242,8 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
 @bot.event
 async def on_ready():
     print(f"🤖 {bot.user.name} is online and operational!")
+    if not automated_weekly_leaderboard.is_running():
+        automated_weekly_leaderboard.start()
 
 @bot.event
 async def on_message(message):
@@ -494,43 +500,38 @@ async def clan_status(ctx, *, args: str = None):
     if end_date: params["end"] = end_date
 
     try:
-        response = requests.get(WEBAPP_URL, params=params, timeout=15)
-        if response.status_code == 200:
-            res_data = response.json()
-            
-            if res_data.get("status") == "success" and res_data.get("data"):
-                payload_data = res_data["data"]
-                
-                # Header formatting
-                header = f"📊 **Clan Donation Report Summary** (`Target: {target.upper()}`)\n"
-                if start_date or end_date:
-                    header += f"📅 Window: `{start_date or 'Beginning'} ➔ {end_date or 'Present'}`\n"
-                if resource_filter:
-                    header += f"🔍 Resource Filter: `{resource_filter}`\n"
-                if player_filter:
-                    header += f"👤 Player Filter: `{player_filter}`\n"
-                header += "—" * 40 + "\n"
+        # 🔥 UPGRADED NON-BLOCKING ROUTING LAYER
+        payload_data = await fetch_vault_data(params)
+        
+        if payload_data:
+            # Header formatting
+            header = f"📊 **Clan Donation Report Summary** (`Target: {target.upper()}`)\n"
+            if start_date or end_date:
+                header += f"📅 Window: `{start_date or 'Beginning'} ➔ {end_date or 'Present'}`\n"
+            if resource_filter:
+                header += f"🔍 Resource Filter: `{resource_filter}`\n"
+            if player_filter:
+                header += f"👤 Player Filter: `{player_filter}`\n"
+            header += "—" * 40 + "\n"
 
-                report = [header]
+            report = [header]
 
-                if target == "global":
-                    for item, total in payload_data.items():
-                        report.append(f"📦 Total **{total}x {item}** donated.")
-                else:
-                    for player, items in payload_data.items():
-                        item_strings = [f"**{amount}x {item}**" for item, amount in items.items()]
-                        if item_strings:
-                            report.append(f"👤 `{player}`: {', '.join(item_strings)}")
-
-                final_text = "\n".join(report)
-                if len(final_text) > 2000:
-                    await status_msg.edit(content="⚠️ Output too massive to display over Discord. Reduce date windows.")
-                else:
-                    await status_msg.edit(content=final_text)
+            if target == "global":
+                for item, total in payload_data.items():
+                    report.append(f"📦 Total **{total}x {item}** donated.")
             else:
-                await status_msg.edit(content=f"🔍 No records matched your search parameters.")
+                for player, items in payload_data.items():
+                    item_strings = [f"**{amount}x {item}**" for item, amount in items.items()]
+                    if item_strings:
+                        report.append(f"👤 `{player}`: {', '.join(item_strings)}")
+
+            final_text = "\n".join(report)
+            if len(final_text) > 2000:
+                await status_msg.edit(content="⚠️ Output too massive to display over Discord. Reduce date windows.")
+            else:
+                await status_msg.edit(content=final_text)
         else:
-            await status_msg.edit(content=f"❌ Network Error. HTTP Status: {response.status_code}")
+            await status_msg.edit(content=f"🔍 No records matched your search parameters or web app timed out.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Script error executing search: {str(e)}")
 
@@ -769,6 +770,168 @@ async def correct_donation(ctx, *, correction_string: str):
         await ctx.send("❌ **Error:** Could not find the original message asset thread target.")
     except Exception as e:
         await ctx.send(f"❌ **System Error processing amendment logic:** {str(e)}")
+
+from datetime import datetime, timedelta
+
+@bot.command(name="leaderboard")
+async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str = None):
+    """
+    Displays a donation leaderboard sorted by highest total contribution.
+    Timeframes: week, month, year, all
+    Syntax Example: !leaderboard month resource=Oxium
+    """
+    timeframe = timeframe.lower()
+    if timeframe not in ["week", "month", "year", "all"]:
+        await ctx.send("❌ **Invalid Timeframe.** Select between `week`, `month`, `year`, or `all`.")
+        return
+
+    # 1. Map timeframes to exact start-date strings
+    today = datetime.utcnow()
+    start_date = None
+    if timeframe == "week":
+        start_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    elif timeframe == "month":
+        start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+    elif timeframe == "year":
+        start_date = (today - timedelta(days=365)).strftime("%Y-%m-%d")
+
+    # 2. Extract resource filter if provided
+    resource_filter = None
+    if optional_filters and "resource=" in optional_filters.lower():
+        raw_res = optional_filters.lower().split("resource=")[1].strip()
+        # Use your fuzzy matching mechanics matching your clanstatus logic
+        match = process.extractOne(raw_res, RESOURCE_WHITELIST, scorer=fuzz.WRatio)
+        if match and match[1] >= 75:
+            resource_filter = match[0]
+
+    status_msg = await ctx.send("📊 *Compiling database matrix ledger details...*")
+
+    # 3. Setup parameters for the player data matrix mapping
+    params = {"target": "player"} # Always request a player breakdown for leaderboard counts
+    if resource_filter: params["resource"] = resource_filter
+    if start_date: params["start"] = start_date
+
+    try:
+        # Fetch data via our new async helper
+        payload_data = await fetch_vault_data(params)
+        if not payload_data:
+            await status_msg.edit(content=f"🔍 No donation records found for timeframe: **{timeframe.upper()}**.")
+            return
+
+        # 4. Calculate gross item sum per player
+        leaderboard_dict = {}
+        for player, items in payload_data.items():
+            total_donated = sum(int(amount) for amount in items.values())
+            if total_donated > 0:
+                leaderboard_dict[player] = total_donated
+
+        # Sort values descending
+        sorted_leaderboard = sorted(leaderboard_dict.items(), key=lambda x: x[1], reverse=True)
+
+        if not sorted_leaderboard:
+            await status_msg.edit(content="❌ No active ledger entries matched your query thresholds.")
+            return
+
+        # 5. Format the Leaderboard Embed Layout
+        res_suffix = f" — `{resource_filter}`" if resource_filter else " — Gross Items"
+        embed = discord.Embed(
+            title=f"🏆 CLAN CONTRIBUTION LEADERBOARD ({timeframe.upper()})",
+            color=discord.Color.gold() if timeframe == "week" else discord.Color.purple(),
+            timestamp=datetime.utcnow()
+        )
+        
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        leaderboard_lines = []
+        
+        for rank, (player, total) in enumerate(sorted_leaderboard[:10], start=1):
+            rank_display = medals.get(rank, f"**#{rank}**")
+            leaderboard_lines.append(f"{rank_display} `@{player}`: **{total:,}** units{res_suffix}")
+
+        embed.description = "\n".join(leaderboard_lines)
+        embed.set_footer(text="Keep up the farming, Tenno! • Data Live-Synced")
+        await status_msg.edit(content=None, embed=embed)
+
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Failed to calculate leaderboard loops: {str(e)}")
+
+
+async def fetch_vault_data(params: dict) -> dict:
+    """Helper function to fetch aggregated vault metrics from Google Apps Script asynchronously."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(WEBAPP_URL, params=params, timeout=15, allow_redirects=True) as resp:
+            if resp.status == 200:
+                res_data = await resp.json()
+                if res_data.get("status") == "success":
+                    return res_data.get("data", {})
+            return {}
+
+@tasks.loop(hours=24)
+async def automated_weekly_leaderboard():
+    """
+    Triggers automatically. Checks if today is Monday, and posts the Weekly Summary.
+    Uses the non-blocking async Google Sheets data engine.
+    """
+    now = datetime.utcnow()
+    # 0 = Monday, 1 = Tuesday ... 6 = Sunday
+    if now.weekday() != 0: 
+        return # Skip execution if it's not Monday
+
+    channel = bot.get_channel(AUTO_LEADERBOARD_CHANNEL_ID)
+    if not channel:
+        print("⚠️ [AUTOMATION] Leaderboard channel ID target not found.")
+        return
+
+    print("🛰️ [AUTOMATION] Generating automated Weekly Clan Leaderboard post...")
+    
+    # 1. Calculate the trailing 7 days start window
+    start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    
+    # 2. Match the player structure query layout parameters
+    params = {
+        "target": "player",
+        "start": start_date
+    }
+    
+    try:
+        # 3. Query the data payload via the unified async helper function
+        payload_data = await fetch_vault_data(params)
+        if not payload_data:
+            print("ℹ️ [AUTOMATION] No donation logs found for the automated weekly run.")
+            return
+            
+        # 4. Process the multi-item structure and calculate totals per player
+        leaderboard_dict = {}
+        for player, items in payload_data.items():
+            total_donated = sum(int(amount) for amount in items.values())
+            if total_donated > 0:
+                leaderboard_dict[player] = total_donated
+                
+        # 5. Sort members descending by total amount donated
+        sorted_leaderboard = sorted(leaderboard_dict.items(), key=lambda x: x[1], reverse=True)
+        
+        if not sorted_leaderboard:
+            print("ℹ️ [AUTOMATION] Sorted matrix yields no active items.")
+            return
+
+        # 6. Build the Visual Presentation Layout
+        description_lines = []
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        for rank, (player, total) in enumerate(sorted_leaderboard[:10], start=1):
+            rank_display = medals.get(rank, f"**#{rank}**")
+            description_lines.append(f"{rank_display} `@{player}` — **{total:,}** units (Gross)")
+            
+        embed = discord.Embed(
+            title="✨ WEEKLY CLAN FARMING WRAP-UP ✨",
+            description=f"Here are our top vault contributors for the past week:\n\n" + "\n".join(description_lines),
+            color=discord.Color.green(),
+            timestamp=datetime.utcnow()
+        )
+        embed.set_footer(text="Automated Weekly Summary Matrix • Live-Synced")
+        await channel.send(embed=embed)
+        print("✅ [AUTOMATION] Weekly Leaderboard summary posted successfully.")
+        
+    except Exception as e:
+        print(f"❌ Background task leaderboard error: {e}")
 
 # --- LAUNCH ---
 if __name__ == "__main__":

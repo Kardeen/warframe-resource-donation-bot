@@ -145,7 +145,8 @@ def load_config():
         "ADMIN_KANAL_ID": 0, 
         "SPENDEN_KANAL_ID": 0, 
         "NUR_IM_SPENDENKANAL": True, 
-        "RESOURCES_FILE": DEFAULT_RESOURCES_FILE
+        "RESOURCES_FILE": DEFAULT_RESOURCES_FILE,
+        "AUTO_LEADERBOARD_CHANNEL_ID": 0
     }
     
     save_config(default_blueprint)
@@ -267,6 +268,7 @@ class BotDashboard(QMainWindow):
         self.url_input = QLineEdit(self.config["WEBAPP_URL"])
         self.admin_chan_input = QLineEdit(str(self.config["ADMIN_KANAL_ID"]))
         self.spend_chan_input = QLineEdit(str(self.config["SPENDEN_KANAL_ID"]))
+        self.leaderboard_chan_input = QLineEdit(str(self.config["AUTO_LEADERBOARD_CHANNEL_ID"]))
         self.restrict_cb = QCheckBox("Enforce strict channel lockdown rules (NUR_IM_SPENDENKANAL)")
         self.restrict_cb.setChecked(self.config["NUR_IM_SPENDENKANAL"])
         
@@ -278,6 +280,9 @@ class BotDashboard(QMainWindow):
         settings_layout.addWidget(self.admin_chan_input)
         settings_layout.addWidget(QLabel("💰 **Public Donation Tracking Channel ID:**"))
         settings_layout.addWidget(self.spend_chan_input)
+        settings_layout.addWidget(self.restrict_cb)
+        settings_layout.addWidget(QLabel("🏆 **Automated Leaderboard Channel ID:**"))
+        settings_layout.addWidget(self.leaderboard_chan_input)
         settings_layout.addWidget(self.restrict_cb)
         
         save_btn = QPushButton("💾 Commit Configuration Settings Changes")
@@ -304,6 +309,8 @@ class BotDashboard(QMainWindow):
                 <li><b>!vaultsync</b> - Overwrites the master baseline tab in your spreadsheet using a raw screenshot of current in-game numbers.</li>
                 <li><b>!vaultconsume [item parameters]</b> - Deducts materials used for room builds/decorations directly from live balance sheets.</li>
                 <li><b>!clanstatus [optional filter settings]</b> - Powerful analytical tool. Supports <i>global</i>, <i>player=Name</i>, and date constraints (e.g., <code>start=2026-06-01</code>).</li>
+                <li><b>!leaderboard [week/month/year/all] [resource=Name]</b> - Renders visual competitive leaderboards sorted by contribution.</li>
+                <li><b>!correct [Resource=Amount]</b> - Reply directly to a bot status message to update records dynamically in place.</li>
             </ul>
         """)
         
@@ -340,6 +347,7 @@ class BotDashboard(QMainWindow):
             self.config["WEBAPP_URL"] = self.url_input.text().strip()
             self.config["ADMIN_KANAL_ID"] = int(self.admin_chan_input.text().strip())
             self.config["SPENDEN_KANAL_ID"] = int(self.spend_chan_input.text().strip())
+            self.config["AUTO_LEADERBOARD_CHANNEL_ID"] = int(self.leaderboard_chan_input.text().strip())
             self.config["NUR_IM_SPENDENKANAL"] = self.restrict_cb.isChecked()
             
             save_config(self.config)
