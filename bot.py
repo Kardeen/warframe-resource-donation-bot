@@ -8,18 +8,21 @@ from rapidfuzz import process, fuzz
 import json
 import aiohttp
 import asyncio
-from datetime import datetime, timedelta
+import datetime as dt
 from discord.ext import tasks
+import traceback
 
 def sync_global_config():
     """Reads config.json and forces the global variables to update to the latest GUI values."""
-    global WEBAPP_URL, ADMIN_KANAL_ID, SPENDEN_KANAL_ID, NUR_IM_SPENDENKANAL
+    global WEBAPP_URL, ADMIN_KANAL_ID, SPENDEN_KANAL_ID, NUR_IM_SPENDENKANAL, AUTO_LEADERBOARD_CHANNEL_ID, AUTO_LEADERBOARD_DAY
     
     config = get_live_config()
     WEBAPP_URL = config["WEBAPP_URL"]
     ADMIN_KANAL_ID = config["ADMIN_KANAL_ID"]
     SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
     NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
+    AUTO_LEADERBOARD_CHANNEL_ID = config["AUTO_LEADERBOARD_CHANNEL_ID"]
+    AUTO_LEADERBOARD_DAY = config["AUTO_LEADERBOARD_DAY"]
 
 # --- NEW CONFIGURATION LOADER ---
 def get_live_config():
@@ -35,6 +38,7 @@ SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
 NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
 # Define your automated channel loop destination
 AUTO_LEADERBOARD_CHANNEL_ID = config["AUTO_LEADERBOARD_CHANNEL_ID"]
+AUTO_LEADERBOARD_DAY = config["AUTO_LEADERBOARD_DAY"]
 
 RESOURCES_FILE = config.get("RESOURCES_FILE", "warframe_resources.txt")
 RESOURCE_WHITELIST = []
@@ -771,8 +775,6 @@ async def correct_donation(ctx, *, correction_string: str):
     except Exception as e:
         await ctx.send(f"❌ **System Error processing amendment logic:** {str(e)}")
 
-from datetime import datetime, timedelta
-
 @bot.command(name="leaderboard")
 async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str = None):
     """
@@ -786,14 +788,14 @@ async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str
         return
 
     # 1. Map timeframes to exact start-date strings
-    today = datetime.now(datetime.timezone.utc)
+    today = dt.datetime.now(dt.timezone.utc)
     start_date = None
     if timeframe == "week":
-        start_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+        start_date = (today - dt.timedelta(days=7)).strftime("%Y-%m-%d")
     elif timeframe == "month":
-        start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+        start_date = (today - dt.timedelta(days=30)).strftime("%Y-%m-%d")
     elif timeframe == "year":
-        start_date = (today - timedelta(days=365)).strftime("%Y-%m-%d")
+        start_date = (today - dt.timedelta(days=365)).strftime("%Y-%m-%d")
 
     # 2. Extract resource filter if provided
     resource_filter = None
@@ -837,7 +839,7 @@ async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str
         embed = discord.Embed(
             title=f"🏆 CLAN CONTRIBUTION LEADERBOARD ({timeframe.upper()})",
             color=discord.Color.gold() if timeframe == "week" else discord.Color.purple(),
-            timestamp=datetime.utcnow()
+            timestamp=dt.datetime.now(dt.timezone.utc)
         )
         
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
@@ -868,23 +870,29 @@ async def fetch_vault_data(params: dict) -> dict:
 @tasks.loop(hours=24)
 async def automated_weekly_leaderboard():
     """
-    Triggers automatically. Checks if today is Monday, and posts the Weekly Summary.
-    Uses the non-blocking async Google Sheets data engine.
+    Triggers automatically every 24 hours. Checks if today matches the 
+    configured weekday preference before generating the leaderboard post.
     """
-    now = datetime.now(datetime.timezone.utc)
-    # 0 = Monday, 1 = Tuesday ... 6 = Sunday
-    if now.weekday() != 0: 
-        return # Skip execution if it's not Monday
+    sync_global_config()
+    
+    target_day_name = config.get("AUTO_LEADERBOARD_DAY", "Monday").strip().capitalize()
+    
+    # 2. Match current weekday name strings
+    now = dt.datetime.now(dt.timezone.utc)
+    current_day_name = now.strftime("%A") # Returns "Monday", "Saturday", etc.
+    
+    if current_day_name != target_day_name: 
+        return # Safe exit: today is not the configured leaderboard day!
 
-    channel = bot.get_channel(AUTO_LEADERBOARD_CHANNEL_ID)
-    if not channel:
-        print("⚠️ [AUTOMATION] Leaderboard channel ID target not found.")
+    channel = bot.get_channel(config["AUTO_LEADERBOARD_CHANNEL_ID"])
+    if not channel or channel == 0:
+        print("⚠️ [AUTOMATION] Leaderboard channel ID target missing or unconfigured.")
         return
 
     print("🛰️ [AUTOMATION] Generating automated Weekly Clan Leaderboard post...")
     
     # 1. Calculate the trailing 7 days start window
-    start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    start_date = (now - dt.timedelta(days=7)).strftime("%Y-%m-%d")
     
     # 2. Match the player structure query layout parameters
     params = {
@@ -924,7 +932,7 @@ async def automated_weekly_leaderboard():
             title="✨ WEEKLY CLAN FARMING WRAP-UP ✨",
             description=f"Here are our top vault contributors for the past week:\n\n" + "\n".join(description_lines),
             color=discord.Color.green(),
-            timestamp=datetime.utcnow()
+            timestamp=dt.datetime.now(dt.timezone.utc)
         )
         embed.set_footer(text="Automated Weekly Summary Matrix • Live-Synced")
         await channel.send(embed=embed)
@@ -932,6 +940,7 @@ async def automated_weekly_leaderboard():
         
     except Exception as e:
         print(f"❌ Background task leaderboard error: {e}")
+        #traceback.print_exc()
 
 # --- LAUNCH ---
 if __name__ == "__main__":

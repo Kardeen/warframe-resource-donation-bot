@@ -146,7 +146,8 @@ def load_config():
         "SPENDEN_KANAL_ID": 0, 
         "NUR_IM_SPENDENKANAL": True, 
         "RESOURCES_FILE": DEFAULT_RESOURCES_FILE,
-        "AUTO_LEADERBOARD_CHANNEL_ID": 0
+        "AUTO_LEADERBOARD_CHANNEL_ID": 0,
+        "AUTO_LEADERBOARD_DAY": "Monday"
     }
     
     save_config(default_blueprint)
@@ -269,6 +270,7 @@ class BotDashboard(QMainWindow):
         self.admin_chan_input = QLineEdit(str(self.config["ADMIN_KANAL_ID"]))
         self.spend_chan_input = QLineEdit(str(self.config["SPENDEN_KANAL_ID"]))
         self.leaderboard_chan_input = QLineEdit(str(self.config["AUTO_LEADERBOARD_CHANNEL_ID"]))
+        self.leaderboard_day_input = QLineEdit(self.config.get("AUTO_LEADERBOARD_DAY", "Monday"))
         self.restrict_cb = QCheckBox("Enforce strict channel lockdown rules (NUR_IM_SPENDENKANAL)")
         self.restrict_cb.setChecked(self.config["NUR_IM_SPENDENKANAL"])
         
@@ -283,6 +285,8 @@ class BotDashboard(QMainWindow):
         settings_layout.addWidget(self.restrict_cb)
         settings_layout.addWidget(QLabel("🏆 **Automated Leaderboard Channel ID:**"))
         settings_layout.addWidget(self.leaderboard_chan_input)
+        settings_layout.addWidget(QLabel("📅 **Automated Leaderboard Post Day (e.g., Monday, Sunday):**"))
+        settings_layout.addWidget(self.leaderboard_day_input)
         settings_layout.addWidget(self.restrict_cb)
         
         save_btn = QPushButton("💾 Commit Configuration Settings Changes")
@@ -348,6 +352,7 @@ class BotDashboard(QMainWindow):
             self.config["ADMIN_KANAL_ID"] = int(self.admin_chan_input.text().strip())
             self.config["SPENDEN_KANAL_ID"] = int(self.spend_chan_input.text().strip())
             self.config["AUTO_LEADERBOARD_CHANNEL_ID"] = int(self.leaderboard_chan_input.text().strip())
+            self.config["AUTO_LEADERBOARD_DAY"] = self.leaderboard_day_input.text().strip().capitalize()
             self.config["NUR_IM_SPENDENKANAL"] = self.restrict_cb.isChecked()
             
             save_config(self.config)
