@@ -18,11 +18,15 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install Poetry
+      - name: Install and configure Poetry
         uses: snok/install-poetry@v1
         with:
+          version: 1.8.2 # Pins a stable release version matrix entry
           virtualenvs-create: true
           virtualenvs-in-project: true
+
+      - name: Add Poetry to Path
+        run: echo "$Home\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf-8 -Append
 
       - name: Install Dependencies
         run: poetry install --no-interaction
