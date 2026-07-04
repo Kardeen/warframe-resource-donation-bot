@@ -61,6 +61,8 @@ print("🚀 OCR Engine ready!")
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.messages = True
+intents.members = True  # 🔥 CRITICAL: This allows the bot to see the member list cache!
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- HELPER FUNCTIONS ---
@@ -240,6 +242,16 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
                     print(f"[PASS 2 FUZZY SUCCESS] Matched typo/variant '{clean_word}' ➔ '{best_match}' ({best_score:.1f}%)")
 
     return detected_items
+
+def extract_ign(member: discord.Member) -> str:
+    """
+    Extracts ONLY the in-game name from a user's nickname if they use the 
+    '<username> // <ingamename>' format. Otherwise returns their display name.
+    """
+    display = member.display_name
+    if "//" in display:
+        return display.split("//", 1)[1].strip()
+    return display
 
 # --- BOT EVENTS ---
 
@@ -847,8 +859,20 @@ async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str
         
         for rank, (player, total) in enumerate(sorted_leaderboard[:10], start=1):
             rank_display = medals.get(rank, f"**#{rank}**")
-            leaderboard_lines.append(f"{rank_display} `@{player}`: **{total:,}** units{res_suffix}")
-
+            
+            # 🔍 Dynamic Server Profile Lookup using the master username string
+            member_obj = discord.utils.get(ctx.guild.members, name=player)
+            
+            if member_obj:
+                ign = extract_ign(member_obj)
+                name_display = f"`@{player}` ({ign})"
+            else:
+                # Fallback display configuration if they left the Discord server
+                name_display = f"`@{player}`"
+                
+            res_suffix = f" — `{resource_filter}`" if resource_filter else " — Gross Items"
+            leaderboard_lines.append(f"{rank_display} {name_display} — **{total:,}** units{res_suffix}")
+        
         embed.description = "\n".join(leaderboard_lines)
         embed.set_footer(text="Keep up the farming, Tenno! • Data Live-Synced")
         await status_msg.edit(content=None, embed=embed)
@@ -859,12 +883,25 @@ async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str
 
 async def fetch_vault_data(params: dict) -> dict:
     """Helper function to fetch aggregated vault metrics from Google Apps Script asynchronously."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(WEBAPP_URL, params=params, timeout=15, allow_redirects=True) as resp:
-            if resp.status == 200:
-                res_data = await resp.json()
-                if res_data.get("status") == "success":
-                    return res_data.get("data", {})
+    # 🔥 FIX: Pass an explicit aiohttp ClientTimeout config instance
+    # Setting total=60 gives Google Sheets up to a full minute to process heavy historical data loops
+    timeout_config = aiohttp.ClientTimeout(total=60)
+    
+    async with aiohttp.ClientSession(timeout=timeout_config) as session:
+        try:
+            async with session.get(WEBAPP_URL, params=params, allow_redirects=True) as resp:
+                if resp.status == 200:
+                    res_data = await resp.json()
+                    if res_data.get("status") == "success":
+                        return res_data.get("data", {})
+                else:
+                    print(f"⚠️ [NETWORK] Webapp server returned bad response code: {resp.status}")
+                return {}
+        except asyncio.TimeoutError:
+            print("🚨 [NETWORK ERROR] The Google Webapp script timed out. Sheet processing took over 60 seconds!")
+            return {}
+        except Exception as net_err:
+            print(f"🚨 [NETWORK ERROR] Pipeline failure connecting to Google Sheets: {net_err}")
             return {}
 
 @tasks.loop(hours=24)
@@ -889,8 +926,27 @@ async def automated_weekly_leaderboard():
         print("⚠️ [AUTOMATION] Leaderboard channel ID target missing or unconfigured.")
         return
 
-    print("🛰️ [AUTOMATION] Generating automated Weekly Clan Leaderboard post...")
+    # =========================================================================
+    # 🛡️ ANTI-DUPLICATE RESTART GUARDRAIL
+    # =========================================================================
+    print("🔍 [AUTOMATION] Day matches! Checking channel history for duplicate posts...")
     
+    # Look back through the last 10 messages in the leaderboard channel
+    async for msg in channel.history(limit=10):
+        # Check if the message belongs to this bot and contains embeds
+        if msg.author == bot.user and msg.embeds:
+            for embed in msg.embeds:
+                # Match against our exact automated leaderboard title string blueprint
+                if embed.title == "✨ WEEKLY CLAN FARMING WRAP-UP ✨":
+                    # Check if that message was created within the last 20 hours
+                    time_delta = now - msg.created_at
+                    if time_delta.total_seconds() < 72000:  # 20 hours in seconds
+                        print("🛑 [AUTOMATION] Aborting run: A leaderboard was already generated today. Preventing duplicate post spam.")
+                        return
+    # =========================================================================
+
+    print("🛰️ [AUTOMATION] Generating automated Weekly Clan Leaderboard post...")
+
     # 1. Calculate the trailing 7 days start window
     start_date = (now - dt.timedelta(days=7)).strftime("%Y-%m-%d")
     
@@ -926,8 +982,18 @@ async def automated_weekly_leaderboard():
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         for rank, (player, total) in enumerate(sorted_leaderboard[:10], start=1):
             rank_display = medals.get(rank, f"**#{rank}**")
-            description_lines.append(f"{rank_display} `@{player}` — **{total:,}** units (Gross)")
             
+            # 🔍 Dynamic Server Profile Lookup inside the background cron loop thread
+            member_obj = discord.utils.get(channel.guild.members, name=player)
+            
+            if member_obj:
+                ign = extract_ign(member_obj)
+                name_display = f"`@{player}` ({ign})"
+            else:
+                name_display = f"`@{player}`"
+                
+            description_lines.append(f"{rank_display} {name_display} — **{total:,}** units (Gross)")
+
         embed = discord.Embed(
             title="✨ WEEKLY CLAN FARMING WRAP-UP ✨",
             description=f"Here are our top vault contributors for the past week:\n\n" + "\n".join(description_lines),
@@ -940,7 +1006,7 @@ async def automated_weekly_leaderboard():
         
     except Exception as e:
         print(f"❌ Background task leaderboard error: {e}")
-        #traceback.print_exc()
+        traceback.print_exc()
 
 # --- LAUNCH ---
 if __name__ == "__main__":

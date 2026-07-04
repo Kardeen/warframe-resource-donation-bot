@@ -282,7 +282,6 @@ class BotDashboard(QMainWindow):
         settings_layout.addWidget(self.admin_chan_input)
         settings_layout.addWidget(QLabel("💰 **Public Donation Tracking Channel ID:**"))
         settings_layout.addWidget(self.spend_chan_input)
-        settings_layout.addWidget(self.restrict_cb)
         settings_layout.addWidget(QLabel("🏆 **Automated Leaderboard Channel ID:**"))
         settings_layout.addWidget(self.leaderboard_chan_input)
         settings_layout.addWidget(QLabel("📅 **Automated Leaderboard Post Day (e.g., Monday, Sunday):**"))
