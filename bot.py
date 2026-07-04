@@ -106,15 +106,10 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
     def clean_quantity_chunks(match):
         raw_chunk = match.group(1)
         
-        # 1. Look for a period followed by OCR cursor text clutter at the end (e.g., .OOpX or .00p)
-        # Convert the period itself into a zero if it's breaking a thousands threshold
-        if re.search(r'\.[0OopXx]+$', raw_chunk) or len(re.sub(r'\D', '', raw_chunk)) < 3:
-            raw_chunk = raw_chunk.replace('.', '0')
-            
-        # 2. Standardize common OCR letter swaps to their numeric counterparts
-        normalized = raw_chunk.upper().replace('O', '0').replace('I', '1').replace('S', '5')
+        # 1. Standardize common OCR letter swaps to their numeric counterparts
+        normalized = raw_chunk.upper().replace('.', '').replace('O', '0').replace('I', '1').replace('S', '5')
         
-        # 3. Drop any residual non-digits (like the trailing p or X)
+        # 2. Drop any residual non-digits (like the trailing p or X)
         pure_digits = re.sub(r'\D', '', normalized)
         return f" {pure_digits} X "
 
