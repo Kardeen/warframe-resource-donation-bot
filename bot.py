@@ -78,6 +78,14 @@ intents.messages = True
 intents.members = True  # 🔥 CRITICAL: This allows the bot to see the member list cache!
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Override bot.close to gracefully shut down the persistent aiohttp.ClientSession
+original_close = bot.close
+async def new_close():
+    if hasattr(bot, "http_session") and not bot.http_session.closed:
+        await bot.http_session.close()
+    await original_close()
+bot.close = new_close
+
 # --- HELPER FUNCTIONS ---
 
 def clean_and_validate_ocr(raw_text_lines, threshold=75):
@@ -266,6 +274,10 @@ def extract_ign(member: discord.Member) -> str:
 @bot.event
 async def on_ready():
     print(f"🤖 {bot.user.name} is online and operational!")
+    if not hasattr(bot, "http_session") or bot.http_session.closed:
+        timeout_config = aiohttp.ClientTimeout(total=60)
+        bot.http_session = aiohttp.ClientSession(timeout=timeout_config)
+    
     if not automated_weekly_leaderboard.is_running():
         automated_weekly_leaderboard.start()
 
@@ -280,7 +292,7 @@ async def on_message(message):
 
     # 2. 🔥 FIX: Let Discord process administrative commands (!correct, !clanstatus) first!
     # If the message starts with your prefix, process it and exit this event loop immediately.
-    if message.content.startswith("!"):
+    if message.content.startswith(bot.command_prefix):
         await bot.process_commands(message)
         return
 
@@ -343,13 +355,11 @@ async def on_message(message):
                 
                 try:
                     # 🚀 FIXED ASYNC ENGINE: Explicitly force redirect preservation
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            WEBAPP_URL, 
-                            json=payload, 
-                            timeout=60,
-                            allow_redirects=True  # 🔥 CRITICAL FIX: Tells aiohttp to follow Google's 302 redirect smoothly
-                        ) as resp:
+                    async with bot.http_session.post(
+                        WEBAPP_URL, 
+                        json=payload, 
+                        allow_redirects=True  # 🔥 CRITICAL FIX: Tells aiohttp to follow Google's 302 redirect smoothly
+                    ) as resp:
                             
                             if resp.status == 200:
                                 # Read the text payload first to ensure it's not a raw string error
@@ -406,67 +416,65 @@ async def sync_missed_donations(ctx, limit: int = 100):
     logged_lines_count = 0
 
     # 3. Read history backward specifically from the donation tracking channel
-    timeout_config = aiohttp.ClientTimeout(total=60)
-    async with aiohttp.ClientSession(timeout=timeout_config) as session:
-        async for message in donation_channel.history(limit=limit):
-            # Skip bot responses completely
-            if message.author.bot:
-                continue
+    async for message in donation_channel.history(limit=limit):
+        # Skip bot responses completely
+        if message.author.bot:
+            continue
 
-            # RULE: Check if this bot was explicitly tagged in the donation channel
-            if bot.user in message.mentions:
-                # Duplicate Guard: skip if it already sports our confirmation green checkmark
-                has_check = any(r.emoji == "✅" for r in message.reactions)
-                if has_check:
-                    continue 
+        # RULE: Check if this bot was explicitly tagged in the donation channel
+        if bot.user in message.mentions:
+            # Duplicate Guard: skip if it already sports our confirmation green checkmark
+            has_check = any(r.emoji == "✅" for r in message.reactions)
+            if has_check:
+                continue 
 
-                raw_lines = []
-                if message.content:
-                    raw_lines.append(message.content)
+            raw_lines = []
+            if message.content:
+                raw_lines.append(message.content)
 
-                if message.attachments:
-                    for attachment in message.attachments:
-                        if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                            try:
-                                img_bytes = await attachment.read()
-                                loop = asyncio.get_running_loop()
-                                ocr_text = await loop.run_in_executor(
-                                    None, 
-                                    functools.partial(reader.readtext, detail=0), 
-                                    img_bytes
-                                )
-                                raw_lines.extend(ocr_text)
-                            except Exception as e:
-                                print(f"[CROSS-SYNC OCR FAILED] Message ID {message.id}: {e}")
-
-                if raw_lines:
-                    # Run the text stream through your case-insensitive hybrid engine
-                    detected_items = clean_and_validate_ocr(raw_lines)
-
-                    if detected_items:
-                        payload = {
-                            "action": "log", 
-                            "username": str(message.author.name),
-                            "donations": detected_items,
-                            "timestamp": message.created_at.isoformat() # FIX: Pass original time for history sync too!
-                        }
-
+            if message.attachments:
+                for attachment in message.attachments:
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
                         try:
-                            async with session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
-                                if response.status == 200:
-                                    res_data = await response.json()
-                                    if res_data.get("status") == "success":
-                                        # Add the checkmark directly onto the user's message in the donation channel!
-                                        await message.add_reaction("✅")
-                                        processed_count += 1
-                                        logged_lines_count += len(detected_items)
-                                    else:
-                                        await message.add_reaction("❌")
+                            img_bytes = await attachment.read()
+                            loop = asyncio.get_running_loop()
+                            ocr_text = await loop.run_in_executor(
+                                None, 
+                                functools.partial(reader.readtext, detail=0), 
+                                img_bytes
+                            )
+                            raw_lines.extend(ocr_text)
+                        except Exception as e:
+                            print(f"[CROSS-SYNC OCR FAILED] Message ID {message.id}: {e}")
+
+            if raw_lines:
+                # Run the text stream through your case-insensitive hybrid engine
+                detected_items = clean_and_validate_ocr(raw_lines)
+
+                if detected_items:
+                    payload = {
+                        "action": "log", 
+                        "username": str(message.author.name),
+                        "donations": detected_items,
+                        "timestamp": message.created_at.isoformat() # FIX: Pass original time for history sync too!
+                    }
+
+                    try:
+                        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
+                            if response.status == 200:
+                                res_data = await response.json()
+                                if res_data.get("status") == "success":
+                                    # Add the checkmark directly onto the user's message in the donation channel!
+                                    await message.add_reaction("✅")
+                                    processed_count += 1
+                                    logged_lines_count += len(detected_items)
                                 else:
                                     await message.add_reaction("❌")
-                        except Exception as err:
-                            print(f"[CROSS-SYNC POST ERROR] {err}")
-                            break
+                            else:
+                                await message.add_reaction("❌")
+                    except Exception as err:
+                        print(f"[CROSS-SYNC POST ERROR] {err}")
+                        break
 
     # 4. Return the summary analysis back to the Admin Channel
     if processed_count > 0:
@@ -606,24 +614,22 @@ async def resource_fields(ctx, *, search_term: str = None):
     # Option B: No parameter -> Use your NEW action=list code to see what's currently in the sheet!
     status_msg = await ctx.send("📡 Fetching active logged resources from Google Sheets...")
     try:
-        timeout_config = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout_config) as session:
-            async with session.get(WEBAPP_URL, params={"action": "list"}, allow_redirects=True) as response:
-                if response.status == 200:
-                    res_data = await response.json()
+        async with bot.http_session.get(WEBAPP_URL, params={"action": "list"}, allow_redirects=True) as response:
+            if response.status == 200:
+                res_data = await response.json()
+                
+                if res_data.get("status") == "success" and res_data.get("resources"):
+                    active_resources = res_data["resources"]
                     
-                    if res_data.get("status") == "success" and res_data.get("resources"):
-                        active_resources = res_data["resources"]
-                        
-                        output = ["📋 **Currently Logged Resources inside Spreadsheet:**", "—" * 40]
-                        output.extend([f"▫️ {r}" for r in active_resources])
-                        output.append(f"\n💡 *Tip: Use `!clanstatus [Item Name]` to filter the overview report for any of these!*")
-                        
-                        await status_msg.edit(content="\n".join(output))
-                    else:
-                        await status_msg.edit(content="📦 The spreadsheet does not contain any valid recorded resource rows yet.")
+                    output = ["📋 **Currently Logged Resources inside Spreadsheet:**", "—" * 40]
+                    output.extend([f"▫️ {r}" for r in active_resources])
+                    output.append(f"\n💡 *Tip: Use `!clanstatus [Item Name]` to filter the overview report for any of these!*")
+                    
+                    await status_msg.edit(content="\n".join(output))
                 else:
-                    await status_msg.edit(content="❌ Failed to retrieve resource list from Google Sheets.")
+                    await status_msg.edit(content="📦 The spreadsheet does not contain any valid recorded resource rows yet.")
+            else:
+                await status_msg.edit(content="❌ Failed to retrieve resource list from Google Sheets.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Network Error: {str(e)}")
 
@@ -666,18 +672,16 @@ async def vault_sync(ctx):
             "donations": verified_balances
         }
         
-        timeout_config = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout_config) as session:
-            async with session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
-                if response.status == 200:
-                    res_data = await response.json()
-                    if res_data.get("status") == "success":
-                        lines = [f"▫️ **{d['item']}** set to balance: `{d['amount']}`" for d in verified_balances]
-                        await status_msg.edit(content=f"✅ **Vault Inventory Sync Complete!**\n\n" + "\n".join(lines))
-                    else:
-                        await status_msg.edit(content="❌ Inventory sync update request failed at the Spreadsheet layer.")
+        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
+            if response.status == 200:
+                res_data = await response.json()
+                if res_data.get("status") == "success":
+                    lines = [f"▫️ **{d['item']}** set to balance: `{d['amount']}`" for d in verified_balances]
+                    await status_msg.edit(content=f"✅ **Vault Inventory Sync Complete!**\n\n" + "\n".join(lines))
                 else:
-                    await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
+                    await status_msg.edit(content="❌ Inventory sync update request failed at the Spreadsheet layer.")
+            else:
+                await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
             
     except Exception as e:
         await status_msg.edit(content=f"❌ Script error running baseline sync: {str(e)}")
@@ -711,18 +715,16 @@ async def vault_consume(ctx, *, message_content: str):
     }
     
     try:
-        timeout_config = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout_config) as session:
-            async with session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
-                if response.status == 200:
-                    res_data = await response.json()
-                    if res_data.get("status") == "success":
-                        lines = [f"📉 Subtracted **{d['amount']}x** away from **{d['item']}** stock lines." for d in deductions]
-                        await status_msg.edit(content=f"✅ **Vault Inventory Consumption Logged!**\n\n" + "\n".join(lines))
-                    else:
-                        await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
+        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
+            if response.status == 200:
+                res_data = await response.json()
+                if res_data.get("status") == "success":
+                    lines = [f"📉 Subtracted **{d['amount']}x** away from **{d['item']}** stock lines." for d in deductions]
+                    await status_msg.edit(content=f"✅ **Vault Inventory Consumption Logged!**\n\n" + "\n".join(lines))
                 else:
-                    await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
+                    await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
+            else:
+                await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Network transmission error: {str(e)}")
 
@@ -812,17 +814,16 @@ async def correct_donation(ctx, *, correction_string: str):
             "new_amount": new_amount        # The value we replace it with
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(WEBAPP_URL, json=payload, timeout=60, allow_redirects=True) as resp:
-                if resp.status == 200:
-                    res_data = await resp.json()
-                    if res_data.get("status") == "success":
-                        await ctx.message.add_reaction("🛠️")
-                        await ctx.send(f"✅ **Correction Applied!** Adjusted **{resolved_resource}** to **{new_amount:,}** for player `@{target_player}` in the database master ledger.")
-                    else:
-                        await ctx.send("❌ Google Sheets rejected the structural correction payload adjustment layout.")
+        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as resp:
+            if resp.status == 200:
+                res_data = await resp.json()
+                if res_data.get("status") == "success":
+                    await ctx.message.add_reaction("🛠️")
+                    await ctx.send(f"✅ **Correction Applied!** Adjusted **{resolved_resource}** to **{new_amount:,}** for player `@{target_player}` in the database master ledger.")
                 else:
-                    await ctx.send(f"❌ Network connection error. Code: {resp.status}")
+                    await ctx.send("❌ Google Sheets rejected the structural correction payload adjustment layout.")
+            else:
+                await ctx.send(f"❌ Network connection error. Code: {resp.status}")
 
     except discord.NotFound:
         await ctx.send("❌ **Error:** Could not find the original message asset thread target.")
