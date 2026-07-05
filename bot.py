@@ -1,6 +1,6 @@
 import os
 import re
-import requests
+import functools
 import discord
 from discord.ext import commands
 import easyocr
@@ -12,17 +12,30 @@ import datetime as dt
 from discord.ext import tasks
 import traceback
 
+_last_config_mtime = os.path.getmtime("config.json") if os.path.exists("config.json") else 0
+
 def sync_global_config():
-    """Reads config.json and forces the global variables to update to the latest GUI values."""
-    global WEBAPP_URL, ADMIN_KANAL_ID, SPENDEN_KANAL_ID, NUR_IM_SPENDENKANAL, AUTO_LEADERBOARD_CHANNEL_ID, AUTO_LEADERBOARD_DAY
+    """Reads config.json and forces the global variables to update to the latest GUI values if modified."""
+    global config, WEBAPP_URL, ADMIN_KANAL_ID, SPENDEN_KANAL_ID, NUR_IM_SPENDENKANAL, AUTO_LEADERBOARD_CHANNEL_ID, AUTO_LEADERBOARD_DAY
+    global _last_config_mtime
     
-    config = get_live_config()
-    WEBAPP_URL = config["WEBAPP_URL"]
-    ADMIN_KANAL_ID = config["ADMIN_KANAL_ID"]
-    SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
-    NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
-    AUTO_LEADERBOARD_CHANNEL_ID = config["AUTO_LEADERBOARD_CHANNEL_ID"]
-    AUTO_LEADERBOARD_DAY = config["AUTO_LEADERBOARD_DAY"]
+    try:
+        if not os.path.exists("config.json"):
+            return
+        mtime = os.path.getmtime("config.json")
+        if mtime == _last_config_mtime:
+            return
+        
+        config = get_live_config()
+        WEBAPP_URL = config["WEBAPP_URL"]
+        ADMIN_KANAL_ID = config["ADMIN_KANAL_ID"]
+        SPENDEN_KANAL_ID = config["SPENDEN_KANAL_ID"]
+        NUR_IM_SPENDENKANAL = config["NUR_IM_SPENDENKANAL"]
+        AUTO_LEADERBOARD_CHANNEL_ID = config["AUTO_LEADERBOARD_CHANNEL_ID"]
+        AUTO_LEADERBOARD_DAY = config["AUTO_LEADERBOARD_DAY"]
+        _last_config_mtime = mtime
+    except Exception as e:
+        print(f"⚠️ Error syncing global config: {e}")
 
 # --- NEW CONFIGURATION LOADER ---
 def get_live_config():
@@ -298,7 +311,12 @@ async def on_message(message):
                         
                         try:
                             image_bytes = await attachment.read()
-                            ocr_results = reader.readtext(image_bytes, detail=0)
+                            loop = asyncio.get_running_loop()
+                            ocr_results = await loop.run_in_executor(
+                                None, 
+                                functools.partial(reader.readtext, detail=0), 
+                                image_bytes
+                            )
                             raw_lines_to_process.extend(ocr_results)
                         except Exception as e:
                             print(f"OCR Error: {str(e)}")
@@ -339,7 +357,6 @@ async def on_message(message):
                                 print(f"📥 [RAW RESPONSE FROM GOOGLE]: {response_text}")
                                 
                                 # Convert to JSON dynamically
-                                import json
                                 response_data = json.loads(response_text)
                                 
                                 if response_data.get("status") == "success":
@@ -389,56 +406,67 @@ async def sync_missed_donations(ctx, limit: int = 100):
     logged_lines_count = 0
 
     # 3. Read history backward specifically from the donation tracking channel
-    async for message in donation_channel.history(limit=limit):
-        # Skip bot responses completely
-        if message.author.bot:
-            continue
+    timeout_config = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(timeout=timeout_config) as session:
+        async for message in donation_channel.history(limit=limit):
+            # Skip bot responses completely
+            if message.author.bot:
+                continue
 
-        # RULE: Check if this bot was explicitly tagged in the donation channel
-        if bot.user in message.mentions:
-            # Duplicate Guard: skip if it already sports our confirmation green checkmark
-            has_check = any(r.emoji == "✅" for r in message.reactions)
-            if has_check:
-                continue 
+            # RULE: Check if this bot was explicitly tagged in the donation channel
+            if bot.user in message.mentions:
+                # Duplicate Guard: skip if it already sports our confirmation green checkmark
+                has_check = any(r.emoji == "✅" for r in message.reactions)
+                if has_check:
+                    continue 
 
-            raw_lines = []
-            if message.content:
-                raw_lines.append(message.content)
+                raw_lines = []
+                if message.content:
+                    raw_lines.append(message.content)
 
-            if message.attachments:
-                for attachment in message.attachments:
-                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
+                if message.attachments:
+                    for attachment in message.attachments:
+                        if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
+                            try:
+                                img_bytes = await attachment.read()
+                                loop = asyncio.get_running_loop()
+                                ocr_text = await loop.run_in_executor(
+                                    None, 
+                                    functools.partial(reader.readtext, detail=0), 
+                                    img_bytes
+                                )
+                                raw_lines.extend(ocr_text)
+                            except Exception as e:
+                                print(f"[CROSS-SYNC OCR FAILED] Message ID {message.id}: {e}")
+
+                if raw_lines:
+                    # Run the text stream through your case-insensitive hybrid engine
+                    detected_items = clean_and_validate_ocr(raw_lines)
+
+                    if detected_items:
+                        payload = {
+                            "action": "log", 
+                            "username": str(message.author.name),
+                            "donations": detected_items,
+                            "timestamp": message.created_at.isoformat() # FIX: Pass original time for history sync too!
+                        }
+
                         try:
-                            img_bytes = await attachment.read()
-                            ocr_text = reader.readtext(img_bytes, detail=0)
-                            raw_lines.extend(ocr_text)
-                        except Exception as e:
-                            print(f"[CROSS-SYNC OCR FAILED] Message ID {message.id}: {e}")
-
-            if raw_lines:
-                # Run the text stream through your case-insensitive hybrid engine
-                detected_items = clean_and_validate_ocr(raw_lines)
-
-                if detected_items:
-                    payload = {
-                        "action": "log", 
-                        "username": str(message.author.name),
-                        "donations": detected_items,
-                        "timestamp": message.created_at.isoformat() # FIX: Pass original time for history sync too!
-                    }
-
-                    try:
-                        response = requests.post(WEBAPP_URL, json=payload)
-                        if response.status_code == 200 and response.json().get("status") == "success":
-                            # Add the checkmark directly onto the user's message in the donation channel!
-                            await message.add_reaction("✅")
-                            processed_count += 1
-                            logged_lines_count += len(detected_items)
-                        else:
-                            await message.add_reaction("❌")
-                    except Exception as err:
-                        print(f"[CROSS-SYNC POST ERROR] {err}")
-                        break
+                            async with session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
+                                if response.status == 200:
+                                    res_data = await response.json()
+                                    if res_data.get("status") == "success":
+                                        # Add the checkmark directly onto the user's message in the donation channel!
+                                        await message.add_reaction("✅")
+                                        processed_count += 1
+                                        logged_lines_count += len(detected_items)
+                                    else:
+                                        await message.add_reaction("❌")
+                                else:
+                                    await message.add_reaction("❌")
+                        except Exception as err:
+                            print(f"[CROSS-SYNC POST ERROR] {err}")
+                            break
 
     # 4. Return the summary analysis back to the Admin Channel
     if processed_count > 0:
@@ -578,22 +606,24 @@ async def resource_fields(ctx, *, search_term: str = None):
     # Option B: No parameter -> Use your NEW action=list code to see what's currently in the sheet!
     status_msg = await ctx.send("📡 Fetching active logged resources from Google Sheets...")
     try:
-        response = requests.get(f"{WEBAPP_URL}?action=list", timeout=60)
-        if response.status_code == 200:
-            res_data = response.json()
-            
-            if res_data.get("status") == "success" and res_data.get("resources"):
-                active_resources = res_data["resources"]
-                
-                output = ["📋 **Currently Logged Resources inside Spreadsheet:**", "—" * 40]
-                output.extend([f"▫️ {r}" for r in active_resources])
-                output.append(f"\n💡 *Tip: Use `!clanstatus [Item Name]` to filter the overview report for any of these!*")
-                
-                await status_msg.edit(content="\n".join(output))
-            else:
-                await status_msg.edit(content="📦 The spreadsheet does not contain any valid recorded resource rows yet.")
-        else:
-            await status_msg.edit(content="❌ Failed to retrieve resource list from Google Sheets.")
+        timeout_config = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout_config) as session:
+            async with session.get(WEBAPP_URL, params={"action": "list"}, allow_redirects=True) as response:
+                if response.status == 200:
+                    res_data = await response.json()
+                    
+                    if res_data.get("status") == "success" and res_data.get("resources"):
+                        active_resources = res_data["resources"]
+                        
+                        output = ["📋 **Currently Logged Resources inside Spreadsheet:**", "—" * 40]
+                        output.extend([f"▫️ {r}" for r in active_resources])
+                        output.append(f"\n💡 *Tip: Use `!clanstatus [Item Name]` to filter the overview report for any of these!*")
+                        
+                        await status_msg.edit(content="\n".join(output))
+                    else:
+                        await status_msg.edit(content="📦 The spreadsheet does not contain any valid recorded resource rows yet.")
+                else:
+                    await status_msg.edit(content="❌ Failed to retrieve resource list from Google Sheets.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Network Error: {str(e)}")
 
@@ -618,7 +648,12 @@ async def vault_sync(ctx):
         image_bytes = await attachment.read()
         
         # Feed through your exact same high-precision state machine text parser!
-        ocr_results = reader.readtext(image_bytes, detail=0)
+        loop = asyncio.get_running_loop()
+        ocr_results = await loop.run_in_executor(
+            None,
+            functools.partial(reader.readtext, detail=0),
+            image_bytes
+        )
         verified_balances = clean_and_validate_ocr(ocr_results)
         
         if not verified_balances:
@@ -631,12 +666,18 @@ async def vault_sync(ctx):
             "donations": verified_balances
         }
         
-        response = requests.post(WEBAPP_URL, json=payload)
-        if response.status_code == 200 and response.json().get("status") == "success":
-            lines = [f"▫️ **{d['item']}** set to balance: `{d['amount']}`" for d in verified_balances]
-            await status_msg.edit(content=f"✅ **Vault Inventory Sync Complete!**\n\n" + "\n".join(lines))
-        else:
-            await status_msg.edit(content="❌ Inventory sync update request failed at the Spreadsheet layer.")
+        timeout_config = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout_config) as session:
+            async with session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
+                if response.status == 200:
+                    res_data = await response.json()
+                    if res_data.get("status") == "success":
+                        lines = [f"▫️ **{d['item']}** set to balance: `{d['amount']}`" for d in verified_balances]
+                        await status_msg.edit(content=f"✅ **Vault Inventory Sync Complete!**\n\n" + "\n".join(lines))
+                    else:
+                        await status_msg.edit(content="❌ Inventory sync update request failed at the Spreadsheet layer.")
+                else:
+                    await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
             
     except Exception as e:
         await status_msg.edit(content=f"❌ Script error running baseline sync: {str(e)}")
@@ -670,12 +711,18 @@ async def vault_consume(ctx, *, message_content: str):
     }
     
     try:
-        response = requests.post(WEBAPP_URL, json=payload)
-        if response.status_code == 200 and response.json().get("status") == "success":
-            lines = [f"📉 Subtracted **{d['amount']}x** away from **{d['item']}** stock lines." for d in deductions]
-            await status_msg.edit(content=f"✅ **Vault Inventory Consumption Logged!**\n\n" + "\n".join(lines))
-        else:
-            await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
+        timeout_config = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout_config) as session:
+            async with session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
+                if response.status == 200:
+                    res_data = await response.json()
+                    if res_data.get("status") == "success":
+                        lines = [f"📉 Subtracted **{d['amount']}x** away from **{d['item']}** stock lines." for d in deductions]
+                        await status_msg.edit(content=f"✅ **Vault Inventory Consumption Logged!**\n\n" + "\n".join(lines))
+                    else:
+                        await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
+                else:
+                    await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Network transmission error: {str(e)}")
 
@@ -907,7 +954,7 @@ async def automated_weekly_leaderboard():
     """
     sync_global_config()
     
-    target_day_name = config.get("AUTO_LEADERBOARD_DAY", "Monday").strip().capitalize()
+    target_day_name = AUTO_LEADERBOARD_DAY.strip().capitalize()
     
     # 2. Match current weekday name strings
     now = dt.datetime.now(dt.timezone.utc)
@@ -916,7 +963,7 @@ async def automated_weekly_leaderboard():
     if current_day_name != target_day_name: 
         return # Safe exit: today is not the configured leaderboard day!
 
-    channel = bot.get_channel(config["AUTO_LEADERBOARD_CHANNEL_ID"])
+    channel = bot.get_channel(AUTO_LEADERBOARD_CHANNEL_ID)
     if not channel or channel == 0:
         print("⚠️ [AUTOMATION] Leaderboard channel ID target missing or unconfigured.")
         return

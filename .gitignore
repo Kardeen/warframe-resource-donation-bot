@@ -15,3 +15,4 @@ dist/
 .env
 config.json
 warframe_resources.txt
+config*.json
