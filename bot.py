@@ -425,6 +425,10 @@ async def sync_missed_donations(ctx, limit: int = 100):
         if message.author.bot:
             continue
 
+        # Ignore any messages that are direct replies to prevent logging !correct commands
+        if message.reference is not None:
+            continue
+
         # RULE: Check if this bot was explicitly tagged in the donation channel
         if bot.user in message.mentions:
             # Duplicate Guard: skip if it already sports our confirmation green checkmark
