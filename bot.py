@@ -939,12 +939,6 @@ async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str
 
 
 async def http_request_with_retry(method: str, url: str, max_retries: int = 3, **kwargs) -> tuple:
-    """
-    Performs an HTTP request via the bot's shared session with up to max_retries attempts.
-    Uses exponential backoff between retries: 1s → 2s → 4s.
-    Returns a (status_code: int, response_text: str) tuple on success.
-    Raises the last exception if all attempts fail.
-    """
     kwargs.setdefault("allow_redirects", True)
     last_error = None
 
@@ -961,7 +955,9 @@ async def http_request_with_retry(method: str, url: str, max_retries: int = 3, *
             else:
                 print(f"❌ [HTTP RETRY] All {max_retries} attempts exhausted. Last error: {e}")
 
-    raise last_error
+    if last_error is not None:
+        raise last_error
+    raise asyncio.SubprocessError("HTTP retry loop exhausted with no active exception state caught.")
 
 
 async def fetch_vault_data(params: dict) -> dict:
