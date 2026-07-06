@@ -354,35 +354,27 @@ async def on_message(message):
                 }
                 
                 try:
-                    # 🚀 FIXED ASYNC ENGINE: Explicitly force redirect preservation
-                    async with bot.http_session.post(
-                        WEBAPP_URL, 
-                        json=payload, 
-                        allow_redirects=True  # 🔥 CRITICAL FIX: Tells aiohttp to follow Google's 302 redirect smoothly
-                    ) as resp:
-                            
-                            if resp.status == 200:
-                                # Read the text payload first to ensure it's not a raw string error
-                                response_text = await resp.text()
-                                print(f"📥 [RAW RESPONSE FROM GOOGLE]: {response_text}")
-                                
-                                # Convert to JSON dynamically
-                                response_data = json.loads(response_text)
-                                
-                                if response_data.get("status") == "success":
-                                    await message.add_reaction("✅")
-                                    details = "\n".join([f"▫️ {d['amount']}x {d['item']}" for d in verified_donations])
-                                    await status_msg.edit(content=f"✅ **Donation registered!**\n👤 Player: {message.author.name}\n{details}")
-                                else:
-                                    await message.add_reaction("❌")
-                                    await status_msg.edit(content="❌ Data processing failed at Google Sheets layer.")
-                            else:
-                                await message.add_reaction("❌")
-                                await status_msg.edit(content=f"❌ Network Error: Google script returned status code {resp.status}")
-                                
+                    # 🚀 Retry-enabled POST with exponential backoff (up to 3 attempts)
+                    resp_status, resp_text = await http_request_with_retry("post", WEBAPP_URL, json=payload)
+                    print(f"📥 [RAW RESPONSE FROM GOOGLE]: {resp_text}")
+                    
+                    if resp_status == 200:
+                        response_data = json.loads(resp_text)
+                        
+                        if response_data.get("status") == "success":
+                            await message.add_reaction("✅")
+                            details = "\n".join([f"▫️ {d['amount']}x {d['item']}" for d in verified_donations])
+                            await status_msg.edit(content=f"✅ **Donation registered!**\n👤 Player: {message.author.name}\n{details}")
+                        else:
+                            await message.add_reaction("❌")
+                            await status_msg.edit(content="❌ Data processing failed at Google Sheets layer.")
+                    else:
+                        await message.add_reaction("❌")
+                        await status_msg.edit(content=f"❌ Network Error: Google script returned status code {resp_status}")
+                        
                 except asyncio.TimeoutError:
                     await message.add_reaction("❌")
-                    await status_msg.edit(content="❌ Connection timed out while trying to reach Google Sheets.")
+                    await status_msg.edit(content="❌ Connection timed out after all retry attempts reaching Google Sheets.")
                 except Exception as e:
                     await message.add_reaction("❌")
                     await status_msg.edit(content=f"❌ Network Error connecting to Google: {str(e)}")
@@ -460,21 +452,27 @@ async def sync_missed_donations(ctx, limit: int = 100):
                     }
 
                     try:
-                        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
-                            if response.status == 200:
-                                res_data = await response.json()
-                                if res_data.get("status") == "success":
-                                    # Add the checkmark directly onto the user's message in the donation channel!
-                                    await message.add_reaction("✅")
-                                    processed_count += 1
-                                    logged_lines_count += len(detected_items)
-                                else:
-                                    await message.add_reaction("❌")
+                        # Retry-enabled POST — up to 3 attempts before giving up on this message
+                        resp_status, resp_text = await http_request_with_retry("post", WEBAPP_URL, json=payload)
+                        if resp_status == 200:
+                            try:
+                                res_data = json.loads(resp_text)
+                            except Exception as parse_err:
+                                print(f"[CROSS-SYNC JSON PARSE ERROR] Message ID {message.id}: {parse_err}")
+                                await message.add_reaction("❌")
+                                continue
+                            if res_data.get("status") == "success":
+                                # Add the checkmark directly onto the user's message in the donation channel!
+                                await message.add_reaction("✅")
+                                processed_count += 1
+                                logged_lines_count += len(detected_items)
                             else:
                                 await message.add_reaction("❌")
+                        else:
+                            await message.add_reaction("❌")
                     except Exception as err:
-                        print(f"[CROSS-SYNC POST ERROR] {err}")
-                        break
+                        print(f"[CROSS-SYNC POST ERROR] Message ID {message.id}: {err}")
+                        continue  # Don't abort the entire loop on a single failure
 
     # 4. Return the summary analysis back to the Admin Channel
     if processed_count > 0:
@@ -614,22 +612,22 @@ async def resource_fields(ctx, *, search_term: str = None):
     # Option B: No parameter -> Use your NEW action=list code to see what's currently in the sheet!
     status_msg = await ctx.send("📡 Fetching active logged resources from Google Sheets...")
     try:
-        async with bot.http_session.get(WEBAPP_URL, params={"action": "list"}, allow_redirects=True) as response:
-            if response.status == 200:
-                res_data = await response.json()
+        resp_status, resp_text = await http_request_with_retry("get", WEBAPP_URL, params={"action": "list"})
+        if resp_status == 200:
+            res_data = json.loads(resp_text)
+            
+            if res_data.get("status") == "success" and res_data.get("resources"):
+                active_resources = res_data["resources"]
                 
-                if res_data.get("status") == "success" and res_data.get("resources"):
-                    active_resources = res_data["resources"]
-                    
-                    output = ["📋 **Currently Logged Resources inside Spreadsheet:**", "—" * 40]
-                    output.extend([f"▫️ {r}" for r in active_resources])
-                    output.append(f"\n💡 *Tip: Use `!clanstatus [Item Name]` to filter the overview report for any of these!*")
-                    
-                    await status_msg.edit(content="\n".join(output))
-                else:
-                    await status_msg.edit(content="📦 The spreadsheet does not contain any valid recorded resource rows yet.")
+                output = ["📋 **Currently Logged Resources inside Spreadsheet:**", "—" * 40]
+                output.extend([f"▫️ {r}" for r in active_resources])
+                output.append(f"\n💡 *Tip: Use `!clanstatus [Item Name]` to filter the overview report for any of these!*")
+                
+                await status_msg.edit(content="\n".join(output))
             else:
-                await status_msg.edit(content="❌ Failed to retrieve resource list from Google Sheets.")
+                await status_msg.edit(content="📦 The spreadsheet does not contain any valid recorded resource rows yet.")
+        else:
+            await status_msg.edit(content="❌ Failed to retrieve resource list from Google Sheets.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Network Error: {str(e)}")
 
@@ -672,16 +670,16 @@ async def vault_sync(ctx):
             "donations": verified_balances
         }
         
-        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
-            if response.status == 200:
-                res_data = await response.json()
-                if res_data.get("status") == "success":
-                    lines = [f"▫️ **{d['item']}** set to balance: `{d['amount']}`" for d in verified_balances]
-                    await status_msg.edit(content=f"✅ **Vault Inventory Sync Complete!**\n\n" + "\n".join(lines))
-                else:
-                    await status_msg.edit(content="❌ Inventory sync update request failed at the Spreadsheet layer.")
+        resp_status, resp_text = await http_request_with_retry("post", WEBAPP_URL, json=payload)
+        if resp_status == 200:
+            res_data = json.loads(resp_text)
+            if res_data.get("status") == "success":
+                lines = [f"▫️ **{d['item']}** set to balance: `{d['amount']}`" for d in verified_balances]
+                await status_msg.edit(content=f"✅ **Vault Inventory Sync Complete!**\n\n" + "\n".join(lines))
             else:
-                await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
+                await status_msg.edit(content="❌ Inventory sync update request failed at the Spreadsheet layer.")
+        else:
+            await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
             
     except Exception as e:
         await status_msg.edit(content=f"❌ Script error running baseline sync: {str(e)}")
@@ -715,16 +713,16 @@ async def vault_consume(ctx, *, message_content: str):
     }
     
     try:
-        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as response:
-            if response.status == 200:
-                res_data = await response.json()
-                if res_data.get("status") == "success":
-                    lines = [f"📉 Subtracted **{d['amount']}x** away from **{d['item']}** stock lines." for d in deductions]
-                    await status_msg.edit(content=f"✅ **Vault Inventory Consumption Logged!**\n\n" + "\n".join(lines))
-                else:
-                    await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
+        resp_status, resp_text = await http_request_with_retry("post", WEBAPP_URL, json=payload)
+        if resp_status == 200:
+            res_data = json.loads(resp_text)
+            if res_data.get("status") == "success":
+                lines = [f"📉 Subtracted **{d['amount']}x** away from **{d['item']}** stock lines." for d in deductions]
+                await status_msg.edit(content=f"✅ **Vault Inventory Consumption Logged!**\n\n" + "\n".join(lines))
             else:
-                await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
+                await status_msg.edit(content="❌ Consumption update request failed at the Spreadsheet layer.")
+        else:
+            await status_msg.edit(content="❌ Failed to connect to Google Sheets.")
     except Exception as e:
         await status_msg.edit(content=f"❌ Network transmission error: {str(e)}")
 
@@ -814,16 +812,16 @@ async def correct_donation(ctx, *, correction_string: str):
             "new_amount": new_amount        # The value we replace it with
         }
 
-        async with bot.http_session.post(WEBAPP_URL, json=payload, allow_redirects=True) as resp:
-            if resp.status == 200:
-                res_data = await resp.json()
-                if res_data.get("status") == "success":
-                    await ctx.message.add_reaction("🛠️")
-                    await ctx.send(f"✅ **Correction Applied!** Adjusted **{resolved_resource}** to **{new_amount:,}** for player `@{target_player}` in the database master ledger.")
-                else:
-                    await ctx.send("❌ Google Sheets rejected the structural correction payload adjustment layout.")
+        resp_status, resp_text = await http_request_with_retry("post", WEBAPP_URL, json=payload)
+        if resp_status == 200:
+            res_data = json.loads(resp_text)
+            if res_data.get("status") == "success":
+                await ctx.message.add_reaction("🛠️")
+                await ctx.send(f"✅ **Correction Applied!** Adjusted **{resolved_resource}** to **{new_amount:,}** for player `@{target_player}` in the database master ledger.")
             else:
-                await ctx.send(f"❌ Network connection error. Code: {resp.status}")
+                await ctx.send("❌ Google Sheets rejected the structural correction payload adjustment layout.")
+        else:
+            await ctx.send(f"❌ Network connection error. Code: {resp_status}")
 
     except discord.NotFound:
         await ctx.send("❌ **Error:** Could not find the original message asset thread target.")
@@ -924,28 +922,49 @@ async def clan_leaderboard(ctx, timeframe: str = "all", *, optional_filters: str
         await status_msg.edit(content=f"❌ Failed to calculate leaderboard loops: {str(e)}")
 
 
+async def http_request_with_retry(method: str, url: str, max_retries: int = 3, **kwargs) -> tuple:
+    """
+    Performs an HTTP request via the bot's shared session with up to max_retries attempts.
+    Uses exponential backoff between retries: 1s → 2s → 4s.
+    Returns a (status_code: int, response_text: str) tuple on success.
+    Raises the last exception if all attempts fail.
+    """
+    kwargs.setdefault("allow_redirects", True)
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with getattr(bot.http_session, method)(url, **kwargs) as response:
+                return response.status, await response.text()
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            last_error = e
+            if attempt < max_retries:
+                wait = 2 ** (attempt - 1)  # 1s, 2s, 4s
+                print(f"⚠️ [HTTP RETRY] Attempt {attempt}/{max_retries} failed ({type(e).__name__}). Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+            else:
+                print(f"❌ [HTTP RETRY] All {max_retries} attempts exhausted. Last error: {e}")
+
+    raise last_error
+
+
 async def fetch_vault_data(params: dict) -> dict:
     """Helper function to fetch aggregated vault metrics from Google Apps Script asynchronously."""
-    # 🔥 FIX: Pass an explicit aiohttp ClientTimeout config instance
-    # Setting total=60 gives Google Sheets up to a full minute to process heavy historical data loops
-    timeout_config = aiohttp.ClientTimeout(total=60)
-    
-    async with aiohttp.ClientSession(timeout=timeout_config) as session:
-        try:
-            async with session.get(WEBAPP_URL, params=params, allow_redirects=True) as resp:
-                if resp.status == 200:
-                    res_data = await resp.json()
-                    if res_data.get("status") == "success":
-                        return res_data.get("data", {})
-                else:
-                    print(f"⚠️ [NETWORK] Webapp server returned bad response code: {resp.status}")
-                return {}
-        except asyncio.TimeoutError:
-            print("🚨 [NETWORK ERROR] The Google Webapp script timed out. Sheet processing took over 60 seconds!")
-            return {}
-        except Exception as net_err:
-            print(f"🚨 [NETWORK ERROR] Pipeline failure connecting to Google Sheets: {net_err}")
-            return {}
+    try:
+        resp_status, resp_text = await http_request_with_retry("get", WEBAPP_URL, params=params)
+        if resp_status == 200:
+            res_data = json.loads(resp_text)
+            if res_data.get("status") == "success":
+                return res_data.get("data", {})
+        else:
+            print(f"⚠️ [NETWORK] Webapp server returned bad response code: {resp_status}")
+        return {}
+    except asyncio.TimeoutError:
+        print("🚨 [NETWORK ERROR] The Google Webapp script timed out after all retry attempts!")
+        return {}
+    except Exception as net_err:
+        print(f"🚨 [NETWORK ERROR] Pipeline failure connecting to Google Sheets: {net_err}")
+        return {}
 
 @tasks.loop(hours=24)
 async def automated_weekly_leaderboard():

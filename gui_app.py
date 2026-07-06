@@ -193,6 +193,10 @@ class DiscordBotThread(QThread):
             sys.stdout = CustomLogStream(self.log_signal)
             sys.stderr = CustomLogStream(self.log_signal)
             
+            # Setup logging so discord.py internal logs are captured
+            import logging
+            logging.basicConfig(level=logging.INFO)
+            
             from bot import bot
             self.log_signal.emit("🛰️ Connecting core to Discord gateways...")
             
