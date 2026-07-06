@@ -88,6 +88,15 @@ bot.close = new_close
 
 # --- HELPER FUNCTIONS ---
 
+def clean_raw_donation_text(raw_text: str) -> str:
+    # 1. Strip out commas that are part of thousands formatting (e.g., "20, 000" -> "20000" or "300,000" -> "300000")
+    # This looks for a comma optionally followed by spaces, right before a digit block
+    normalized_text = re.sub(r', *(\d+)', r'\1', raw_text)
+    
+    # 2. (Optional) Fix common OCR letter-to-number misreads inside the digit blocks if needed
+    # Proceed with your standard resource chunking split logic...
+    return normalized_text
+
 def clean_and_validate_ocr(raw_text_lines, threshold=75):
     """
     Two-Pass Hybrid Parser with Section Isolation & Period-Number Standardization:
@@ -133,6 +142,9 @@ def clean_and_validate_ocr(raw_text_lines, threshold=75):
         # 2. Drop any residual non-digits (like the trailing p or X)
         pure_digits = re.sub(r'\D', '', normalized)
         return f" {pure_digits} X "
+
+    # This removes the commas from the text
+    combined_text = clean_raw_donation_text(combined_text)
 
     # This targets chunks like "500.000 X" or "50.OOpX Polymer" or "35.000 X"
     combined_text = re.sub(r'([\d\.\w]+)\s*[xX]\s*', clean_quantity_chunks, combined_text)
