@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  PYTHONIOENCODING: "utf-8"
+
 jobs:
   run-tests:
     runs-on: windows-latest  # Keeping it windows-latest to match your local runtime mirror
