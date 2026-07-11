@@ -30,7 +30,8 @@ jobs:
 
       - name: Install Core Dependencies
         run: |
-          & "$HOME\.local\bin\poetry" install --no-interaction --no-root
+          & "$HOME\.local\bin\poetry" config installer.modern-installation false
+          & "$HOME\.local\bin\poetry" install --no-interaction --no-root --no-setup
 
       - name: Inject PyInstaller compiler
         run: |
