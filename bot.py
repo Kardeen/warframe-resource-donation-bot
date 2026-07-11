@@ -438,7 +438,10 @@ async def sync_missed_donations(ctx, limit: int = 100):
 
             raw_lines = []
             if message.content:
-                raw_lines.append(message.content)
+                clean_sync_text = re.sub(r'<@!?\d+>', '', message.content).strip()
+                if clean_sync_text:
+                    text_chunks = re.split(r'[,;\n]', clean_sync_text)
+                    raw_lines.extend([line.strip() for line in text_chunks if line.strip()])
 
             if message.attachments:
                 for attachment in message.attachments:
