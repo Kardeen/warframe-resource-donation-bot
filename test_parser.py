@@ -1,12 +1,29 @@
 import unittest
 import sys
 import os
+import json
 
-# Force standard text output visibility for IDE terminals
-suite = unittest.TestSuite()
-unittest.runner.TextTestRunner(stream=sys.stdout, verbosity=2)
+# =========================================================================
+# 🛡️ CI/CD PUBLIC ENVIRONMENT CONFIGURATION MOCK GUARD
+# =========================================================================
+# This creates a dummy config file before importing bot.py so the script 
+# doesn't crash on clean headless repository servers like GitHub Actions.
+MOCK_CONFIG_CREATED = False
+if not os.path.exists("config.json"):
+    mock_config_data = {
+        "TOKEN": "MOCK_DISCORD_TOKEN_XYZ",
+        "WEBAPP_URL": "https://script.google.com/macros/s/MOCK/exec",
+        "ADMIN_KANAL_ID": 123456789,
+        "SPENDEN_KANAL_ID": 987654321,
+        "NUR_IM_SPENDENKANAL": True,
+        "AUTO_LEADERBOARD_CHANNEL_ID": 1122334455,
+        "AUTO_LEADERBOARD_DAY": "Monday"
+    }
+    with open("config.json", "w", encoding="utf-8") as f:
+        json.dump(mock_config_data, f)
+    MOCK_CONFIG_CREATED = True
 
-# Import your engines straight from bot.py
+# Now it is safe to import your production engines!
 from bot import clean_raw_donation_text, clean_and_validate_ocr, RESOURCE_WHITELIST, reader
 
 class WarframeBotComprehensiveTests(unittest.TestCase):
@@ -20,6 +37,19 @@ class WarframeBotComprehensiveTests(unittest.TestCase):
                 "Nano Spores", "Polymer Bundle", "Circuits", "Gallium", 
                 "Control Module", "Credits", "Plastids", "Tellurium", "Cryotic"
             ])
+
+    @classmethod
+    def tearDownClass(cls):
+        """Runs once after all testing concludes. Cleans up the workspace environment."""
+        if MOCK_CONFIG_CREATED and os.path.exists("config.json"):
+            try:
+                os.remove("config.json")
+            except Exception:
+                pass
+
+    # =========================================================================
+    # 📝 LAYER A: TEXT STREAM MATRIX TESTS
+    # =========================================================================
 
     def test_text_stream_offline_sync_simulation(self):
         """Validates arrays of strings matching your offline !sync bug context."""
@@ -44,16 +74,12 @@ class WarframeBotComprehensiveTests(unittest.TestCase):
         self.assertIn("2000 X Oxium", normalized)
         self.assertIn("300000 X Salvage", normalized)
 
-
     # =========================================================================
     # 📸 PARAMETERIZED IMAGE MATRIX RUNNER
     # =========================================================================
 
     def test_all_matrix_images_ocr(self):
         """Iterates over the defined image matrix to execute live OCR comparisons."""
-        
-        # 🎯 DEFINE YOUR EXPECTED TEST MATRIX HERE
-        # Add or adjust these items and amounts to match your actual screenshot values!
         image_test_matrix = {
             "donation_1.png": [
                 {"item": "Cryotic", "amount": 31},
@@ -90,43 +116,29 @@ class WarframeBotComprehensiveTests(unittest.TestCase):
         for filename, expected_data in image_test_matrix.items():
             target_image_path = os.path.join("test_images", filename)
             
-            # Step-nested block mapping context
             with self.subTest(image=filename):
                 if not os.path.exists(target_image_path):
                     print(f"⏩ [MATRIX SKIP] File not found: '{target_image_path}'. Skipping entry.")
                     continue
                 
                 print(f"\n--- 🔍 Testing File: {filename} ---")
-                
-                # 1. Extract raw line readings from image file
                 raw_ocr_lines = reader.readtext(target_image_path, detail=0)
-                
-                # 2. Map through parsing logic structure
                 actual_results = clean_and_validate_ocr(raw_ocr_lines)
                 
-                # 3. Standardize layouts to easily assert values (lowercase matching maps)
                 actual_map = {res["item"].lower(): res["amount"] for res in actual_results}
                 expected_map = {res["item"].lower(): res["amount"] for res in expected_data}
                 
                 print(f"📋 Expected Data: {expected_map}")
                 print(f"📥 Extracted Data: {actual_map}")
                 
-                # 4. Check for length balance mismatches
                 self.assertEqual(
                     len(actual_map), len(expected_map), 
                     f"Mismatched count of extracted items for {filename}. Expected {len(expected_map)}, got {len(actual_map)}."
                 )
                 
-                # 5. Assert resource name and amount matches exactly
                 for resource_name, expected_amount in expected_map.items():
-                    self.assertIn(
-                        resource_name, actual_map, 
-                        f"Missing resource assignment error! Expected to find '{resource_name}' in {filename} but it wasn't extracted."
-                    )
-                    self.assertEqual(
-                        actual_map[resource_name], expected_amount, 
-                        f"Quantity mismatch for '{resource_name}' in {filename}. Expected {expected_amount}, got {actual_map[resource_name]}."
-                    )
+                    self.assertIn(resource_name, actual_map)
+                    self.assertEqual(actual_map[resource_name], expected_amount)
                 
                 print(f"✅ Pass: {filename} data matches expectations perfectly.")
                 
