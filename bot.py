@@ -481,8 +481,16 @@ async def sync_missed_donations(ctx, limit: int = 100):
                                 await message.add_reaction("❌")
                                 continue
                             if res_data.get("status") == "success":
-                                # Add the checkmark directly onto the user's message in the donation channel!
+                                # 1. Keep the native checkmark reaction on the player's original message
                                 await message.add_reaction("✅")
+                                
+                                # 2. Reply directly to the player's original missed message with the structural layout
+                                details = "\n".join([f"▫️ {d['amount']}x {d['item']}" for d in detected_items])
+                                await message.reply(
+                                    content=f"✅ **Donation registered via Timeline Sync!**\n👤 Player: {message.author.name}\n{details}",
+                                    mention_author=False # Prevents ghost pinging the user for old history
+                                )
+                                
                                 processed_count += 1
                                 logged_lines_count += len(detected_items)
                             else:
