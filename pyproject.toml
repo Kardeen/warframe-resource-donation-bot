@@ -2,7 +2,6 @@
 name = "discordbot"
 version = "0.1.0"
 description = ""
-package-mode = false
 authors = [
     {name = "Kardeen",email = "Hans.Lindner5@gmail.com"}
 ]
@@ -29,3 +28,6 @@ build-backend = "poetry.core.masonry.api"
 dev = [
     "pyinstaller (>=6.21.0,<7.0.0)"
 ]
+
+[tool.poetry]
+package-mode = false

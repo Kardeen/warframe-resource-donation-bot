@@ -35,8 +35,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          & "$HOME\.local\bin\poetry" config installer.modern-installation false
-          & "$HOME\.local\bin\poetry" install --no-interaction --no-root --no-setup
+          & "$HOME\.local\bin\poetry" install --no-interaction --no-root
 
       # 🔥 RUNS YOUR COMPREHENSIVE SUITE AUTOMATICALLY
       - name: Run Test Matrix
