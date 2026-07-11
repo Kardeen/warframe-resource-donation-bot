@@ -1,0 +1,43 @@
+name: Execute Automation Unit Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  run-tests:
+    runs-on: windows-latest  # Keeping it windows-latest to match your local runtime mirror
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # Cache the deep EasyOCR model files to speed up subsequent GitHub workflow runs
+      - name: Cache EasyOCR Models
+        uses: actions/cache@v4
+        with:
+          path: ~/.EasyOCR
+          key: ${{ runner.os }}-easyocr-${{ hashFiles('**/poetry.lock') }}
+
+      - name: Install and configure Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 2.0.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install Dependencies
+        run: |
+          & "$HOME\.local\bin\poetry" install --no-interaction --no-root
+
+      # 🔥 RUNS YOUR COMPREHENSIVE SUITE AUTOMATICALLY
+      - name: Run Test Matrix
+        run: |
+          & "$HOME\.local\bin\poetry" run python test_parser.py
