@@ -1,5 +1,6 @@
 import re
 import requests
+import luadata
 
 RAW_WIKI_URL = "https://wiki.warframe.com/w/Module:Resources/data?action=raw"
 
@@ -11,76 +12,91 @@ def extract_resources():
             print(f"❌ Failed to reach the wiki. HTTP Status: {response.status_code}")
             return
 
-        print("⚙️ Processing Lua lines via State-Machine Parser...")
+        raw_text = response.text
         
-        resource_names = ["Credits"]
-        
-        in_resource_data = False
-        current_item_key = None
-        current_item_name = None
-        is_resource_type = False
-        brace_depth = 0
-
-        lines = response.text.splitlines()
-
-        for line in lines:
-            line_str = line.strip()
-            if not line_str or line_str.startswith("--"):
-                continue
-
-            if "local ResourceData =" in line_str:
-                in_resource_data = True
-                continue
+        # 1. Isolate the 'local ResourceData = { ... }' block precisely
+        start_marker = "local ResourceData = {"
+        start_idx = raw_text.find(start_marker)
+        if start_idx == -1:
+            print("❌ Could not find 'local ResourceData = {' in the module script.")
+            return
             
-            if not in_resource_data:
+        # Shift past the variable declaration string to point to the opening brace '{'
+        cursor = start_idx + len(start_marker) - 1
+        
+        # Find the matching closing brace of the main table structure
+        brace_depth = 0
+        end_idx = -1
+        in_string = False
+        string_char = None
+        escape_next = False
+        
+        for i in range(cursor, len(raw_text)):
+            char = raw_text[i]
+            
+            if escape_next:
+                escape_next = False
                 continue
-
-            if brace_depth == 0 and line_str == "}" and current_item_key is None:
-                break
-
-            # 3. Detect the start of a new item block (Separated to prevent quote conflicts)
-            if brace_depth == 0:
-                bracket_match = re.match(r'\["([^"]+)"\]\s*=\s*\{', line_str)
-                plain_match = re.match(r'([a-zA-Z0-9_]+)\s*=\s*\{', line_str) if not bracket_match else None
+            if char == "\\":
+                escape_next = True
+                continue
                 
-                if bracket_match or plain_match:
-                    current_item_key = bracket_match.group(1).strip() if bracket_match else plain_match.group(1).strip()
-                    current_item_name = None
-                    is_resource_type = False
-                    brace_depth = 1
+            if in_string:
+                if char == string_char:
+                    in_string = False
+                continue
+            else:
+                if char in ('"', "'"):
+                    in_string = True
+                    string_char = char
                     continue
+            
+            if char == "{":
+                brace_depth += 1
+            elif char == "}":
+                brace_depth -= 1
+                if brace_depth == 0:
+                    end_idx = i + 1
+                    break
 
-            # 4. Parse properties inside the active item block
-            if current_item_key:
-                openers = line_str.count("{")
-                closers = line_str.count("}")
-                brace_depth += (openers - closers)
+        if end_idx == -1:
+            print("❌ Failed to isolate matching boundaries for the ResourceData dictionary.")
+            return
 
-                if not is_resource_type:
-                    if re.search(r'\bType\s*=\s*["\']Resource["\']', line_str):
-                        is_resource_type = True
+        # 2. Extract the table block text slice
+        lua_table_string = raw_text[cursor:end_idx]
 
-                # FIX: Handle inner single quotes safely by separating double-quote and single-quote matching
-                if not current_item_name:
-                    name_dq_match = re.search(r'\bName\s*=\s*"([^"]+)"', line_str)
-                    name_sq_match = re.search(r"\bName\s*=\s*'([^']+)'", line_str) if not name_dq_match else None
+        print("⚙️ Decoding Lua array structures natively via 'luadata' module...")
+        # luadata translates the isolated Lua table string into a python dictionary matrix instantly!
+        resource_dict = luadata.unserialize(lua_table_string)
+
+        print(f"🔍 Successfully mapped {len(resource_dict)} native entries. Applying type filters...")
+
+        resource_names = ["Credits"]  # Retain standard base currency fallback entry
+
+        # 3. Work with clean Python dictionary mappings instead of text strings!
+        for item_key, properties in resource_dict.items():
+            if not isinstance(properties, dict):
+                continue
+                
+            # Filter A: Must have Type equal to "Resource" exactly
+            if properties.get("Type") == "Resource":
+                internal_name = properties.get("InternalName", "")
+                
+                # Filter B: Exclude open-world mining rocks, gems, and fish parts
+                if any(k in internal_name for k in ["/Gems/", "/Fish/", "/MushroomJournal/"]):
+                    continue
                     
-                    if name_dq_match or name_sq_match:
-                        current_item_name = name_dq_match.group(1).strip() if name_dq_match else name_sq_match.group(1).strip()
-
-                if brace_depth <= 0:
-                    if is_resource_type and not current_item_key.startswith("/Lotus/"):
-                        final_name = current_item_name if current_item_name else current_item_key
-                        if not final_name.startswith("/Lotus/"):
-                            resource_names.append(final_name)
-                    
-                    current_item_key = None
-                    brace_depth = 0
+                display_name = properties.get("Name", item_key).strip()
+                
+                # Filter C: Filter out internal placeholders
+                if not display_name.startswith("/Lotus/") and display_name != "[PH]":
+                    resource_names.append(display_name)
 
         resource_names = sorted(list(set(resource_names)))
 
-        if resource_names:
-            print(f"\n🎉 Success! Extracted {len(resource_names)} exact items matching Type = 'Resource':")
+        if len(resource_names) > 1:
+            print(f"\n🎉 Success! Extracted {len(resource_names)} verified inventory items.")
             print("-" * 50)
             print(f" -> Total items captured: {len(resource_names)}")
             print("-" * 50)

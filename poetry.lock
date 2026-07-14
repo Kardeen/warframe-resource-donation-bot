@@ -717,6 +717,18 @@ lint = ["pre-commit (==4.3.0)"]
 test = ["coverage[toml] (>=7.2)", "pytest (>=8.0)", "pytest-cov (>=5.0)"]
 
 [[package]]
+name = "luadata"
+version = "1.0.5"
+description = "Serialize and unserialize Python list & dictionary between Lua table."
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "luadata-1.0.5-py3-none-any.whl", hash = "sha256:e0ff43e65fb7dada87cdfc0e5b0f089de2e1080f6857f866b377a485c0694edf"},
+    {file = "luadata-1.0.5.tar.gz", hash = "sha256:7cffdfe889fd42b9de44c786c3cfd6591d35ff66ccf1812d0cbd2a3bbc6ddaf0"},
+]
+
+[[package]]
 name = "macholib"
 version = "1.16.4"
 description = "Mach-O header analysis and editing"
@@ -2818,4 +2830,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.16"
-content-hash = "389e00e4d32ab9485e10265389ae25044435e866e649f71663f2ba7b5d6195a9"
+content-hash = "8943c9632e52536281ef7fe91444927dce9a7ae91ade5259cacf1b3fa1560c43"

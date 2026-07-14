@@ -38,10 +38,14 @@ jobs:
       - name: Inject PyInstaller compiler
         run: |
           & "$HOME\.local\bin\poetry" add pyinstaller
+      
+      - name: Generate Fresh Warframe Resource Whitelist
+        run: |
+          & "$HOME\.local\bin\poetry" run python extract_wiki.py
 
       - name: Compile Standalone Executable
         run: |
-          & "$HOME\.local\bin\poetry" run pyinstaller --noconsole --onefile --name "ClanVaultManager" --add-data "extract_wiki.py;." gui_app.py
+          & "$HOME\.local\bin\poetry" run pyinstaller --clean --noconsole --onefile --name "ClanVaultManager" --hidden-import="luadata" --add-data "extract_wiki.py;." gui_app.py
 
       - name: Create GitHub Release and Upload Artifact
         uses: softprops/action-gh-release@v2

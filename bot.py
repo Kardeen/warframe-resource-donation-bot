@@ -11,6 +11,7 @@ import asyncio
 import datetime as dt
 from discord.ext import tasks
 import traceback
+import sys
 
 _last_config_mtime = os.path.getmtime("config.json") if os.path.exists("config.json") else 0
 
@@ -56,15 +57,36 @@ AUTO_LEADERBOARD_DAY = config["AUTO_LEADERBOARD_DAY"]
 RESOURCES_FILE = config.get("RESOURCES_FILE", "warframe_resources.txt")
 RESOURCE_WHITELIST = []
 
-# Inside your functions, whenever you read channels dynamically or want runtime updates, 
-# you can re-call get_live_config() or let the bot restart to take full config changes!
+def get_absolute_resource_path(relative_path):
+    """
+    Ensures we look for the resource file next to the actual executable first, 
+    then falls back to the PyInstaller temporary directory (_MEIPASS).
+    """
+    # 1. First, check if the file exists in the directory of the running executable/script
+    # (sys.argv[0] points to the running .exe on your hard drive)
+    exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    local_path = os.path.join(exe_dir, relative_path)
+    if os.path.exists(local_path):
+        return local_path
 
-if os.path.exists(RESOURCES_FILE):
-    with open(RESOURCES_FILE, "r", encoding="utf-8") as f:
+    # 2. If running inside a PyInstaller sandbox and local file doesn't exist yet, check _MEIPASS
+    if hasattr(sys, '_MEIPASS'):
+        bundle_path = os.path.join(sys._MEIPASS, relative_path)
+        if os.path.exists(bundle_path):
+            return bundle_path
+
+    # 3. Fallback to current working directory
+    return os.path.abspath(relative_path)
+
+# Resolve the real path
+resolved_resources_path = get_absolute_resource_path(RESOURCES_FILE)
+
+if os.path.exists(resolved_resources_path):
+    with open(resolved_resources_path, "r", encoding="utf-8") as f:
         RESOURCE_WHITELIST = [line.strip() for line in f if line.strip()]
     print(f"✅ Whitelist Engine: Loaded {len(RESOURCE_WHITELIST)} official resources.")
 else:
-    print(f"⚠️ WARNING: '{RESOURCES_FILE}' not found! Run your extraction script first.")
+    print(f"⚠️ WARNING: '{RESOURCES_FILE}' not found! Run your extraction script first. Expected at: {resolved_resources_path}")
 
 # --- INITIALIZE ENGINES ---
 print("📥 Loading OCR Models (English)...")
