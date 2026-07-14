@@ -40,8 +40,39 @@ def sync_global_config():
 
 # --- NEW CONFIGURATION LOADER ---
 def get_live_config():
-    with open("config.json", "r") as f:
-        return json.load(f)
+    """Reads config.json, applying default values to missing keys if necessary."""
+    default_blueprint = {
+        "TOKEN": "", 
+        "WEBAPP_URL": "", 
+        "ADMIN_KANAL_ID": 0, 
+        "SPENDEN_KANAL_ID": 0, 
+        "NUR_IM_SPENDENKANAL": True, 
+        "RESOURCES_FILE": "warframe_resources.txt",
+        "AUTO_LEADERBOARD_CHANNEL_ID": 0,
+        "AUTO_LEADERBOARD_DAY": "Monday"
+    }
+    
+    if os.path.exists("config.json"):
+        try:
+            with open("config.json", "r", encoding="utf-8") as f:
+                user_config = json.load(f)
+            
+            # Check for missing keys
+            healed = False
+            for key, default_value in default_blueprint.items():
+                if key not in user_config:
+                    user_config[key] = default_value
+                    healed = True
+            
+            if healed:
+                with open("config.json", "w", encoding="utf-8") as f:
+                    json.dump(user_config, f, indent=4)
+                    
+            return user_config
+        except Exception:
+            return default_blueprint
+            
+    return default_blueprint
 
 config = get_live_config()
 

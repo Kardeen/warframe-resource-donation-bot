@@ -134,11 +134,7 @@ def load_config():
             except Exception as write_err:
                 print(f"❌ [CRITICAL] Failed to write emergency backup definitions to disk: {write_err}")
 
-    # 3. SELF-HEAL LAYER: Ensure Configuration JSON Exists
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-            
+    # 3. SELF-HEAL LAYER: Ensure Configuration JSON Exists and has All Required Keys
     default_blueprint = {
         "TOKEN": "", 
         "WEBAPP_URL": "", 
@@ -149,7 +145,31 @@ def load_config():
         "AUTO_LEADERBOARD_CHANNEL_ID": 0,
         "AUTO_LEADERBOARD_DAY": "Monday"
     }
-    
+
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                user_config = json.load(f)
+            
+            # 🔥 Check for and heal missing keys dynamically
+            healed = False
+            for key, default_value in default_blueprint.items():
+                if key not in user_config:
+                    user_config[key] = default_value
+                    healed = True
+                    print(f"⚙️ [CONFIG MIGRATION] Restored missing key: '{key}' ➔ '{default_value}'")
+            
+            # If we updated any missing values, save the updated file back to disk
+            if healed:
+                save_config(user_config)
+                print("💾 [CONFIG MIGRATION] Successfully updated and saved legacy config.json structure.")
+                
+            return user_config
+            
+        except Exception as read_err:
+            print(f"⚠️ [STARTUP] Failed to parse existing config.json, resetting to default: {read_err}")
+            
+    # If file doesn't exist at all, write a brand new one from the blueprint
     save_config(default_blueprint)
     print(f"⚙️ [INITIALIZATION] Created clean template configuration file matrix at '{CONFIG_FILE}'.")
     return default_blueprint
